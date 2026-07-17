@@ -1,4 +1,4 @@
-Cakes & Bakes — Ticket Rail
+## Cakes & Bakes — Ticket Rail
 
 Order intake for two retail shops, syncing into one factory production
 dashboard — with a live catalog, a separate custom-cake flow, Google-only
