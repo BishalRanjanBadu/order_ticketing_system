@@ -40,13 +40,15 @@ create table if not exists public.profiles (
     check (status in ('active','pending','suspended','removed')),
   shop_id uuid references public.shops(id) on delete set null,
   created_at timestamptz not null default now(),
-  last_active timestamptz not null default now()
+  last_active timestamptz not null default now(),
+  notifications_seen_at timestamptz not null default now()
 );
 
 -- Add columns if upgrading an existing v1 database
 alter table public.profiles add column if not exists email text not null default '';
 alter table public.profiles add column if not exists status text not null default 'active';
 alter table public.profiles add column if not exists last_active timestamptz not null default now();
+alter table public.profiles add column if not exists notifications_seen_at timestamptz not null default now();
 do $$ begin
   alter table public.profiles add constraint profiles_status_check check (status in ('active','pending','suspended','removed'));
 exception when duplicate_object then null;
@@ -585,6 +587,178 @@ create policy history_select on public.order_history for select
   );
 -- inserts happen only via the security-definer trigger functions above,
 -- so no insert/update/delete policy is granted to regular roles.
+
+-- ============================================================================
+-- NOTIFICATIONS — event-driven, role-targeted. Each row is generated
+-- automatically by a trigger below; nobody inserts these by hand from the
+-- app. A notification targets exactly one of:
+--   target_profile_id  → one specific person
+--   target_role         → every ACTIVE user with that role
+--   target_role + target_shop_id → every ACTIVE shop_staff at one shop
+-- Read state is intentionally simple: instead of a per-notification read
+-- flag (which would need a join table for broadcasts to a whole role),
+-- each profile has a single notifications_seen_at timestamp — "unread"
+-- just means created_at > my notifications_seen_at. Opening the panel
+-- marks everything seen at once.
+-- ============================================================================
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  target_type text not null check (target_type in ('user','role','role_shop')),
+  target_profile_id uuid references public.profiles(id) on delete cascade,
+  target_role text check (target_role in ('owner','manager','shop_staff','baker')),
+  target_shop_id uuid references public.shops(id) on delete cascade,
+  notif_type text not null,   -- 'custom_approval_needed' | 'team_pending' | 'order_confirmed'
+                               -- | 'order_ready' | 'custom_approved' | 'custom_rejected' | 'priority_flagged'
+  title text not null,
+  body text not null default '',
+  order_id uuid references public.orders(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_notifications_role on public.notifications(target_role, target_shop_id, created_at desc);
+create index if not exists idx_notifications_user on public.notifications(target_profile_id, created_at desc);
+
+alter table public.notifications enable row level security;
+
+-- everyone can read only the notifications actually aimed at them —
+-- by specific profile id, by their role, or by their role+shop combo
+drop policy if exists notifications_select on public.notifications;
+create policy notifications_select on public.notifications for select
+  using (
+    public.my_status() = 'active' and (
+      (target_type = 'user' and target_profile_id = auth.uid())
+      or (target_type = 'role' and target_role = public.my_role())
+      or (target_type = 'role_shop' and target_role = public.my_role() and target_shop_id = public.my_shop())
+    )
+  );
+-- no insert/update/delete policy for regular roles — every row is created
+-- by the security-definer helper function below, called only from triggers.
+
+create or replace function public.notify(
+  p_target_type text, p_target_role text, p_target_shop_id uuid,
+  p_target_profile_id uuid, p_notif_type text, p_title text, p_body text, p_order_id uuid
+) returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  insert into public.notifications
+    (target_type, target_role, target_shop_id, target_profile_id, notif_type, title, body, order_id)
+  values
+    (p_target_type, p_target_role, p_target_shop_id, p_target_profile_id, p_notif_type, p_title, p_body, p_order_id);
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Order-driven notifications — who needs to know what, mapped to how each
+-- role actually works:
+--   Owner + Manager : a custom order needs approval; a rush order was flagged
+--   Owner only      : a new teammate is waiting for approval (see profile
+--                     trigger below — Owner is the only one who manages team)
+--   Baker           : an order was confirmed (ready to enter the production
+--                     queue); a rush order was flagged
+--   Shop Staff (their own shop only) : their order is Ready (arrange
+--                     pickup/delivery); their custom order was approved
+--                     or rejected
+-- ----------------------------------------------------------------------------
+create or replace function public.orders_notify()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+declare
+  cust text := coalesce(new.customer_name, '');
+  shop text := coalesce((select name from public.shops where id = new.shop_id), '');
+  ref text := '#' || left(new.id::text, 8);
+begin
+  if TG_OP = 'INSERT' then
+    if new.order_kind = 'custom' and new.approval_status = 'pending' then
+      perform public.notify('role','owner',null,null,'custom_approval_needed',
+        'Custom order needs approval', cust || ' at ' || shop || ' — ' || ref, new.id);
+      perform public.notify('role','manager',null,null,'custom_approval_needed',
+        'Custom order needs approval', cust || ' at ' || shop || ' — ' || ref, new.id);
+    end if;
+    if new.is_priority then
+      perform public.notify('role','baker',null,null,'priority_flagged',
+        'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+      perform public.notify('role','owner',null,null,'priority_flagged',
+        'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+      perform public.notify('role','manager',null,null,'priority_flagged',
+        'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+    end if;
+    return new;
+  end if;
+
+  -- TG_OP = 'UPDATE' from here on
+  if new.status = 'confirmed' and old.status is distinct from 'confirmed' then
+    perform public.notify('role','baker',null,null,'order_confirmed',
+      'Order ready for production', cust || ' at ' || shop || ' — ' || ref, new.id);
+  end if;
+
+  if new.status = 'ready' and old.status is distinct from 'ready' then
+    perform public.notify('role_shop','shop_staff',new.shop_id,null,'order_ready',
+      'Order ready for pickup/delivery', cust || ' — ' || ref, new.id);
+    perform public.notify('role','owner',null,null,'order_ready',
+      'Order ready for pickup/delivery', cust || ' at ' || shop || ' — ' || ref, new.id);
+    perform public.notify('role','manager',null,null,'order_ready',
+      'Order ready for pickup/delivery', cust || ' at ' || shop || ' — ' || ref, new.id);
+  end if;
+
+  if new.is_priority and not coalesce(old.is_priority,false) then
+    perform public.notify('role','baker',null,null,'priority_flagged',
+      'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+    perform public.notify('role','owner',null,null,'priority_flagged',
+      'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+    perform public.notify('role','manager',null,null,'priority_flagged',
+      'Rush order flagged', cust || ' at ' || shop || ' — ' || ref, new.id);
+  end if;
+
+  if new.approval_status = 'approved' and old.approval_status is distinct from 'approved' then
+    perform public.notify('role_shop','shop_staff',new.shop_id,null,'custom_approved',
+      'Custom order approved', cust || ' — ' || ref || ' can go into production', new.id);
+    if new.created_by is not null then
+      perform public.notify('user',null,null,new.created_by,'custom_approved',
+        'Your custom order was approved', cust || ' — ' || ref, new.id);
+    end if;
+  end if;
+
+  if new.approval_status = 'rejected' and old.approval_status is distinct from 'rejected' then
+    perform public.notify('role_shop','shop_staff',new.shop_id,null,'custom_rejected',
+      'Custom order rejected', cust || ' — ' || ref, new.id);
+    if new.created_by is not null then
+      perform public.notify('user',null,null,new.created_by,'custom_rejected',
+        'Your custom order was rejected', cust || ' — ' || ref, new.id);
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_orders_notify on public.orders;
+create trigger trg_orders_notify
+  after insert or update on public.orders
+  for each row execute function public.orders_notify();
+
+-- ----------------------------------------------------------------------------
+-- Team-signup notifications — only the Owner manages team accounts, so only
+-- the Owner gets pinged. The bootstrap first-ever signup lands as 'active'
+-- (see handle_new_user above), never 'pending', so it never fires here.
+-- ----------------------------------------------------------------------------
+create or replace function public.profiles_notify()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if new.status = 'pending' then
+    perform public.notify('role','owner',null,null,'team_pending',
+      'New sign-in awaiting approval', coalesce(new.full_name, new.email), null);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_profiles_notify on public.profiles;
+create trigger trg_profiles_notify
+  after insert on public.profiles
+  for each row execute function public.profiles_notify();
 
 -- ============================================================================
 -- STORAGE — bucket + policies for custom-cake reference photos
