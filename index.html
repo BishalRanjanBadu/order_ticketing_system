@@ -137,7 +137,8 @@
   .sidebar{background:var(--bg-panel);border-right:1px solid var(--line);padding:1.4rem 1rem;display:flex;flex-direction:column;position:relative;overflow:hidden;}
   .sidebar::after{content:'';position:absolute;bottom:-36px;right:-36px;width:140px;height:140px;pointer-events:none;opacity:.07;
     background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='34' fill='none' stroke='%23E8B94A' stroke-width='3'/%3E%3Ccircle cx='38' cy='40' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='60' cy='36' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='64' cy='58' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='42' cy='62' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='50' cy='50' r='3.5' fill='%23E8B94A'/%3E%3C/svg%3E") no-repeat center/contain;}
-  .brand{display:flex;align-items:center;gap:.55rem;padding:0 .4rem;margin-bottom:2rem;}
+  .brand-row{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:2rem;padding:0 .4rem;}
+  .brand{display:flex;align-items:center;gap:.55rem;}
   .brand-mark-plate{display:inline-flex;align-items:center;justify-content:center;background:var(--paper);
     border-radius:10px;padding:.4rem .65rem;box-shadow:0 6px 16px -6px rgba(0,0,0,.5), inset 0 0 0 1px rgba(43,36,31,.06);}
   .brand-mark{width:auto;height:26px;flex:none;object-fit:contain;display:block;}
@@ -157,6 +158,40 @@
   .sidebar-foot{border-top:1px solid var(--line);padding-top:1rem;margin-top:1rem;}
   .who{font-size:.8rem;font-weight:600;}
   .who-role{font-size:.7rem;color:var(--chalk-dim);text-transform:capitalize;}
+
+  .bell-btn{position:relative;display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;
+    background:var(--bg-panel-2);border:1px solid var(--line);border-radius:8px;color:var(--chalk-dim);}
+  .bell-btn:hover{color:var(--chalk);border-color:var(--accent-coral);}
+  .bell-btn svg{width:17px;height:17px;}
+  .notif-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 3px;
+    align-items:center;justify-content:center;background:var(--accent-coral);color:#fff;border-radius:20px;
+    font-size:.62rem;font-weight:800;font-family:var(--font-mono);border:2px solid var(--bg-panel);}
+
+  .notif-overlay{position:fixed;inset:0;background:rgba(10,8,6,.4);z-index:70;}
+  .notif-panel{position:fixed;top:70px;right:1.2rem;left:auto;width:340px;max-width:calc(100vw - 2rem);
+    max-height:70vh;background:var(--bg-panel);border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 24px 48px -12px rgba(0,0,0,.6);z-index:71;display:flex;flex-direction:column;overflow:hidden;}
+  .notif-panel-head{display:flex;align-items:center;justify-content:space-between;padding:.9rem 1.1rem;border-bottom:1px solid var(--line);flex:none;}
+  .notif-panel-head h4{font-size:.9rem;}
+  .notif-list{overflow-y:auto;}
+  .notif-item{display:flex;gap:.7rem;padding:.8rem 1.1rem;border-bottom:1px solid var(--line);}
+  .notif-item:last-child{border-bottom:none;}
+  .notif-item.clickable{cursor:pointer;}
+  .notif-item.clickable:hover{background:var(--bg-panel-2);}
+  .notif-item.unread{background:rgba(234,95,114,.06);}
+  .notif-item.unread .notif-title::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--accent-coral);margin-right:.4em;vertical-align:middle;}
+  .notif-icon{font-size:1.1rem;flex:none;line-height:1.3;}
+  .notif-body{min-width:0;}
+  .notif-title{font-size:.82rem;font-weight:700;}
+  .notif-text{font-size:.78rem;color:var(--chalk-dim);margin-top:.15rem;}
+  .notif-time{font-size:.68rem;color:var(--chalk-dim);margin-top:.3rem;font-family:var(--font-mono);}
+  .notif-empty{padding:2rem 1.2rem;text-align:center;color:var(--chalk-dim);font-size:.84rem;}
+
+  @media (max-width:900px){
+    .notif-panel{top:64px;right:.7rem;}
+    #notif-bell-desktop{display:none;}
+  }
 
   .content{padding:2rem 2.4rem;max-width:1280px;}
   .content-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:1.6rem;gap:1rem;flex-wrap:wrap;}
@@ -378,7 +413,7 @@
       overflow-y:auto;box-shadow:20px 0 40px rgba(0,0,0,.4);
     }
     .sidebar.open{transform:translateX(0);}
-    .sidebar .brand{margin-bottom:1.6rem;}
+    .sidebar .brand-row{margin-bottom:1.6rem;}
     .sidebar-foot{display:block;}
     .nav{flex-direction:column;}
     .nav-overlay{
@@ -455,6 +490,9 @@ const App = {
   actionLog: [],   // this-session undo stack: {label, table, id, before, after}
   redoLog: [],
   mobileNavOpen: false,
+  notifications: [],
+  notifTimer: null,
+  notifPanelOpen: false,
 };
 
 const STATUS_FLOW = ['new','confirmed','baking','ready','delivered'];
@@ -472,7 +510,7 @@ function boot(){
   App.sb = supabase.createClient(cfg.url, cfg.key);
   App.sb.auth.onAuthStateChange((event, session)=>{
     App.session = session;
-    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); renderAuthScreen(); }
+    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); stopNotifTimer(); renderAuthScreen(); }
   });
   App.sb.auth.getSession().then(({data})=>{
     App.session = data.session;
@@ -584,6 +622,7 @@ async function afterLogin(){
   App.view = defaultViewFor(App.profile.role);
   renderShell();
   startActivityTimer();
+  startNotifTimer();
 }
 async function fetchMyProfile(){
   const { data, error } = await App.sb.from('profiles').select('*').eq('id', App.session.user.id).maybeSingle();
@@ -621,6 +660,34 @@ function startActivityTimer(){
   }, 45000);
 }
 function stopActivityTimer(){ if(App.activityTimer){ clearInterval(App.activityTimer); App.activityTimer=null; } }
+
+/* poll for new notifications — RLS already scopes each query to only the
+   rows targeted at this person (by user, role, or role+shop), so this is
+   just "give me everything I'm allowed to see" on a timer. */
+function startNotifTimer(){
+  stopNotifTimer();
+  loadNotifications();
+  App.notifTimer = setInterval(loadNotifications, 30000);
+}
+function stopNotifTimer(){ if(App.notifTimer){ clearInterval(App.notifTimer); App.notifTimer=null; } }
+async function loadNotifications(){
+  const { data, error } = await App.sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(50);
+  if(error) return;
+  App.notifications = data || [];
+  updateNotifBadge();
+  if(App.notifPanelOpen) drawNotifPanel();
+}
+function unreadNotifCount(){
+  const seen = App.profile?.notifications_seen_at ? new Date(App.profile.notifications_seen_at).getTime() : 0;
+  return App.notifications.filter(n=> new Date(n.created_at).getTime() > seen).length;
+}
+function updateNotifBadge(){
+  const count = unreadNotifCount();
+  document.querySelectorAll('.notif-badge').forEach(el=>{
+    if(count > 0){ el.textContent = count > 9 ? '9+' : String(count); el.style.display = 'flex'; }
+    else{ el.style.display = 'none'; }
+  });
+}
 function startBlockedTimer(){
   stopBlockedTimer();
   App.blockedTimer = setInterval(async ()=>{
@@ -737,10 +804,14 @@ function renderShell(){
       <button class="hamburger" id="hamburger" aria-label="Open menu">${iconMenu}</button>
       <div class="topbar-brand">${brandMark()}</div>
       <div class="topbar-title">${escapeHtml(currentLabel)}</div>
+      <button class="bell-btn" id="notif-bell-mobile" aria-label="Notifications">${iconBell}<span class="notif-badge" id="notif-badge-mobile"></span></button>
     </div>
     <div class="nav-overlay" id="nav-overlay"></div>
     <div class="sidebar" id="sidebar">
-      <div class="brand">${brandMark()}<div class="brand-text"><small>Order &amp; Production</small></div></div>
+      <div class="brand-row">
+        <div class="brand">${brandMark()}<div class="brand-text"><small>Order &amp; Production</small></div></div>
+        <button class="bell-btn" id="notif-bell-desktop" aria-label="Notifications">${iconBell}<span class="notif-badge" id="notif-badge-desktop"></span></button>
+      </div>
       <div class="nav" id="nav">
         ${items.map(it => `<button class="nav-item ${App.view===it.id?'active':''}" data-view="${it.id}">${it.icon}<span>${it.label}</span>${it.badge?`<span class="pill-count">${it.badge}</span>`:''}</button>`).join('')}
       </div>
@@ -750,17 +821,79 @@ function renderShell(){
         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:.7rem;" id="signout">Sign out</button>
       </div>
     </div>
+    <div id="notif-panel-mount"></div>
     <div class="content" id="content"></div>
   </div>`;
   document.getElementById('signout').onclick = async ()=>{ await App.sb.auth.signOut(); };
   document.querySelectorAll('.nav-item').forEach(btn=>{ btn.onclick = ()=>{ App.view = btn.dataset.view; closeMobileNav(); renderShell(); }; });
   document.getElementById('hamburger').onclick = openMobileNav;
   document.getElementById('nav-overlay').onclick = closeMobileNav;
+  document.getElementById('notif-bell-mobile').onclick = toggleNotifPanel;
+  document.getElementById('notif-bell-desktop').onclick = toggleNotifPanel;
   if(App.mobileNavOpen){ document.getElementById('sidebar').classList.add('open'); document.getElementById('nav-overlay').classList.add('open'); }
+  updateNotifBadge();
+  if(App.notifPanelOpen) drawNotifPanel();
   renderView();
 }
 function openMobileNav(){ App.mobileNavOpen = true; document.getElementById('sidebar').classList.add('open'); document.getElementById('nav-overlay').classList.add('open'); }
 function closeMobileNav(){ App.mobileNavOpen = false; const s=document.getElementById('sidebar'), o=document.getElementById('nav-overlay'); if(s) s.classList.remove('open'); if(o) o.classList.remove('open'); }
+
+/* ============================================================================
+   NOTIFICATIONS — dropdown panel
+============================================================================ */
+const NOTIF_ICON = {
+  custom_approval_needed: '⏳', team_pending: '👤', order_confirmed: '🧾',
+  order_ready: '📦', custom_approved: '✅', custom_rejected: '✕', priority_flagged: '⚑',
+};
+function toggleNotifPanel(){
+  App.notifPanelOpen = !App.notifPanelOpen;
+  if(App.notifPanelOpen){ loadNotifications(); drawNotifPanel(); }
+  else{ const m = document.getElementById('notif-panel-mount'); if(m) m.innerHTML = ''; }
+}
+function drawNotifPanel(){
+  const mount = document.getElementById('notif-panel-mount');
+  if(!mount) return;
+  const seen = App.profile?.notifications_seen_at ? new Date(App.profile.notifications_seen_at).getTime() : 0;
+  mount.innerHTML = `
+    <div class="notif-overlay" id="notif-overlay"></div>
+    <div class="notif-panel">
+      <div class="notif-panel-head">
+        <h4>Notifications</h4>
+        <button class="btn btn-ghost btn-sm" id="notif-mark-read">Mark all read</button>
+      </div>
+      <div class="notif-list">
+        ${App.notifications.length ? App.notifications.map(n=>`
+          <div class="notif-item ${new Date(n.created_at).getTime()>seen?'unread':''} ${n.order_id?'clickable':''}" data-order="${n.order_id||''}">
+            <div class="notif-icon">${NOTIF_ICON[n.notif_type]||'🔔'}</div>
+            <div class="notif-body">
+              <div class="notif-title">${escapeHtml(n.title)}</div>
+              <div class="notif-text">${escapeHtml(n.body)}</div>
+              <div class="notif-time">${timeAgo(n.created_at)}</div>
+            </div>
+          </div>`).join('') : `<div class="notif-empty">Nothing yet — you'll see updates here as orders move.</div>`}
+      </div>
+    </div>`;
+  document.getElementById('notif-overlay').onclick = toggleNotifPanel;
+  document.getElementById('notif-mark-read').onclick = markAllNotifsRead;
+  mount.querySelectorAll('.notif-item.clickable').forEach(el=>{
+    el.onclick = ()=>{ toggleNotifPanel(); openOrderModal(el.dataset.order); };
+  });
+}
+async function markAllNotifsRead(){
+  const now = new Date().toISOString();
+  const { error } = await App.sb.from('profiles').update({notifications_seen_at: now}).eq('id', App.profile.id);
+  if(error){ toast(error.message, true); return; }
+  App.profile.notifications_seen_at = now;
+  updateNotifBadge();
+  drawNotifPanel();
+}
+function timeAgo(ts){
+  const s = Math.floor((Date.now() - new Date(ts).getTime())/1000);
+  if(s < 60) return 'just now';
+  if(s < 3600) return Math.floor(s/60) + 'm ago';
+  if(s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
 
 async function renderView(){
   const content = document.getElementById('content');
@@ -1923,6 +2056,7 @@ function renderSettingsView(){
 function brandMark(){ return `<span class="brand-mark-plate"><img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></span>`; }
 function heroLogo(){ return `<div class="hero-logo"><span class="brand-mark-plate brand-mark-plate-lg"><img class="brand-mark brand-mark-lg" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></span></div>`; }
 const iconMenu = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`;
+const iconBell = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4.5 1.5 6 1.5 6h-15S6 12.5 6 8Z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>`;
 const iconTicket = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z"/></svg>`;
 const iconPlus = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>`;
 const iconLayers = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/></svg>`;
