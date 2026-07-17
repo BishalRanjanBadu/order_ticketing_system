@@ -320,16 +320,79 @@
   .hero-wordmark{font-family:var(--font-display);font-size:2rem;letter-spacing:.02em;line-height:1;color:var(--accent-cocoa);text-align:center;}
   .hero-wordmark small{display:block;font-family:var(--font-body);font-size:.7rem;letter-spacing:.26em;text-transform:uppercase;color:var(--chalk-dim);margin-top:.35rem;}
 
+  .topbar{display:none;}
+  .hamburger{display:none;}
+  .nav-overlay{display:none;}
+
   @media (max-width:900px){
     .shell{grid-template-columns:1fr;}
-    .sidebar{position:sticky;top:0;flex-direction:row;overflow-x:auto;z-index:10;padding:.8rem;}
-    .brand{margin-bottom:0;}
-    .nav{flex-direction:row;}
-    .sidebar-foot{display:none;}
-    .content{padding:1.2rem;}
+
+    /* top app bar, mobile only */
+    .topbar{
+      display:flex;align-items:center;gap:.7rem;position:sticky;top:0;z-index:30;
+      background:var(--bg-panel);border-bottom:1px solid var(--line);padding:.7rem 1rem;
+    }
+    .hamburger{display:flex;align-items:center;justify-content:center;width:38px;height:38px;flex:none;
+      background:var(--bg-panel-2);border:1px solid var(--line);border-radius:8px;color:var(--chalk);}
+    .topbar-brand{display:flex;align-items:center;}
+    .topbar-brand .brand-mark{height:24px;}
+    .topbar-title{font-family:var(--font-display);font-size:1.05rem;font-weight:600;color:var(--chalk-dim);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+    /* off-canvas drawer */
+    .sidebar{
+      position:fixed;top:0;left:0;bottom:0;width:78vw;max-width:300px;z-index:50;
+      transform:translateX(-100%);transition:transform .22s ease;flex-direction:column;
+      overflow-y:auto;box-shadow:20px 0 40px rgba(0,0,0,.4);
+    }
+    .sidebar.open{transform:translateX(0);}
+    .sidebar .brand{margin-bottom:1.6rem;}
+    .sidebar-foot{display:block;}
+    .nav{flex-direction:column;}
+    .nav-overlay{
+      display:block;position:fixed;inset:0;background:rgba(10,8,6,.55);z-index:40;
+      opacity:0;pointer-events:none;transition:opacity .2s ease;
+    }
+    .nav-overlay.open{opacity:1;pointer-events:auto;}
+
+    .content{padding:1rem;}
     .board{grid-template-columns:1fr;}
     .field-row,.field-row3{grid-template-columns:1fr;}
     .stat-grid{grid-template-columns:1fr 1fr;}
+    .content-head{flex-direction:column;align-items:flex-start;gap:.5rem;}
+    .content-head h2{font-size:1.25rem;}
+
+    .filterbar{padding:.8rem;gap:.7rem;}
+    .filterbar .field{min-width:0;flex:1 1 100%;}
+
+    .ticket{flex-wrap:wrap;padding:.9rem 1rem;}
+    .ticket-right{width:100%;justify-content:space-between;margin-top:.3rem;padding-top:.5rem;border-top:1px dashed var(--paper-shadow);}
+    .rail{padding:.8rem;}
+
+    .modal-backdrop{padding:0;align-items:stretch;}
+    .modal{max-width:none;width:100%;min-height:100vh;border-radius:0;padding:1.1rem;}
+
+    .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    table{min-width:560px;}
+
+    .item-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));}
+    .cat-tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:.3rem;}
+    .cat-tab{flex:none;}
+
+    .mode-toggle{flex-direction:column;}
+    .status-track{gap:.35rem;}
+    .status-pill{padding:.5em .8em;font-size:.72rem;}
+
+    .panel{padding:1.5rem 1.2rem;max-width:none;}
+    .center-screen{padding:1.2rem;}
+  }
+
+  @media (max-width:480px){
+    .stat-grid{grid-template-columns:1fr 1fr;gap:.6rem;}
+    .stat-card{padding:.85rem .9rem;}
+    .stat-card .num{font-size:1.5rem;}
+    .ticket-title{font-size:.88rem;}
+    .item-grid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr));}
   }
 </style>
 </head>
@@ -1433,7 +1496,7 @@ function drawCatalogList(){
         <h3>${escapeHtml(c.name)} ${c.active===false?'<span class="badge badge-cancelled">inactive</span>':''}</h3>
         <button class="btn btn-ghost btn-sm" data-toggle-cat="${c.id}">${c.active===false?'Reactivate':'Deactivate'} category</button>
       </div>
-      <table style="margin-bottom:.8rem;">
+      <div class="table-scroll"><table style="margin-bottom:.8rem;">
         <thead><tr><th>Item</th><th>₹ / kg</th><th>₹ / ½kg</th><th></th></tr></thead>
         <tbody>
           ${c.items.map(i=>`
@@ -1441,10 +1504,10 @@ function drawCatalogList(){
             <td><input type="text" class="i-name" value="${escapeAttr(i.name)}" style="min-width:160px;"></td>
             <td><input type="number" step="1" class="inline-num i-full" value="${i.price_full_kg}"></td>
             <td><input type="number" step="1" class="inline-num i-half" value="${i.price_half_kg}"></td>
-            <td><button class="btn btn-ghost btn-sm i-save">Save</button> <button class="btn btn-ghost btn-sm i-toggle">${i.active===false?'Reactivate':'Deactivate'}</button></td>
+            <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm i-save">Save</button> <button class="btn btn-ghost btn-sm i-toggle">${i.active===false?'Reactivate':'Deactivate'}</button></td>
           </tr>`).join('')}
         </tbody>
-      </table>
+      </table></div>
       <div style="display:flex;gap:.5rem;"><input type="text" class="new-item-name" placeholder="New item name" style="max-width:220px;"><button class="btn btn-ghost btn-sm add-item" data-cat="${c.id}">+ Add item</button></div>
     </div>
   `).join('');
@@ -1494,7 +1557,7 @@ function renderTeamView(){
   const sorted = App.profiles.slice().sort((a,b)=> (a.status==='pending'?-1:0) - (b.status==='pending'?-1:0));
   content.innerHTML = `
     <div class="content-head"><div><h2>Manage team</h2><div class="sub">Activate new sign-ins, assign roles &amp; shops, or suspend/remove access</div></div></div>
-    <table>
+    <div class="table-scroll"><table>
       <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Role</th><th>Shop</th><th>Last active</th></tr></thead>
       <tbody>
         ${sorted.map(p=>`
@@ -1505,11 +1568,11 @@ function renderTeamView(){
           <td><select class="inline-select r-role" ${p.id===App.profile.id?'disabled title="You cannot change your own role"':''}>
             ${['owner','manager','shop_staff','baker'].map(r=>`<option value="${r}" ${p.role===r?'selected':''}>${r.replace('_',' ')}</option>`).join('')}
           </select></td>
-          <td><select class="inline-select r-shop" ${p.id===App.profile.id?'disabled':''}><option value="">—</option>${App.shops.map(s=>`<option value="${s.id}" ${p.shop_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></td>
+          <td><select class="inline-select r-shop" ${p.id===App.profile.id?'disabled':''}><option value="">—</option>${App.shops.filter(s=>s.active!==false || s.id===p.shop_id).map(s=>`<option value="${s.id}" ${p.shop_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></td>
           <td class="sub">${formatDateTime(p.last_active)}</td>
         </tr>`).join('')}
       </tbody>
-    </table>
+    </table></div>
     <div style="margin-top:1.4rem;display:grid;grid-template-columns:1fr;gap:.6rem;">
       ${sorted.map(p=> p.id===App.profile.id ? '' : `
         <div class="chart-card" style="display:flex;justify-content:space-between;align-items:center;padding:.9rem 1.2rem;">
@@ -1642,6 +1705,7 @@ function renderSettingsView(){
 ============================================================================ */
 function brandMark(){ return `<img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo">`; }
 function heroLogo(){ return `<div class="hero-logo"><img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></div>`; }
+const iconMenu = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`;
 const iconTicket = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z"/></svg>`;
 const iconPlus = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>`;
 const iconLayers = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/></svg>`;
