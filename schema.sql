@@ -12,9 +12,17 @@ create extension if not exists pgcrypto;
 -- ----------------------------------------------------------------------------
 create table if not exists public.shops (
   id uuid primary key default gen_random_uuid(),
-  name text not null unique,
+  name text not null,
+  active boolean not null default true,
   created_at timestamptz not null default now()
 );
+alter table public.shops add column if not exists active boolean not null default true;
+-- migration: earlier versions had a hard UNIQUE on name, which meant a
+-- deactivated shop's name stayed "taken" forever and blocked re-adding it.
+-- Drop that constraint (safe no-op if you're on a fresh install) and use a
+-- partial unique index instead, scoped to active shops only.
+alter table public.shops drop constraint if exists shops_name_key;
+create unique index if not exists shops_name_active_idx on public.shops(name) where active;
 
 -- ----------------------------------------------------------------------------
 -- PROFILES  (one row per auth.users row; created automatically on Google sign-in)
@@ -265,11 +273,15 @@ create trigger trg_set_custom_approval
 -- ----------------------------------------------------------------------------
 -- TRIGGER: enforce who may change what on an order
 --   owner / manager : can change anything, any time, including approvals
---   baker           : can ONLY change status (production stage)
+--   baker           : can ONLY change status, and only through the production
+--                      stages (new→confirmed→baking→ready) — NOT the final
+--                      "delivered" step, which belongs to the shop
 --   shop_staff      : can edit their own shop's orders, but only while
 --                      status is 'new' or 'confirmed' (locked once baking
---                      starts); may set status to new/confirmed/cancelled;
---                      may always raise the priority flag
+--                      starts); may set status to new/confirmed/cancelled/
+--                      delivered — i.e. intake and hand-off, not the factory's
+--                      internal baking/ready stages; may always raise the
+--                      priority flag
 --   EVERYONE: a custom order stuck at approval_status='pending' cannot be
 --             moved into 'baking' until Owner/Manager approves it.
 -- ----------------------------------------------------------------------------
@@ -323,6 +335,9 @@ begin
     if non_status_changed then
       raise exception 'Bakers can only update order status, not order details';
     end if;
+    if new.status = 'delivered' and old.status <> 'delivered' then
+      raise exception 'Only Shop Staff/Owner/Manager can mark an order delivered';
+    end if;
   elsif role = 'shop_staff' then
     if old.shop_id <> public.my_shop() then
       raise exception 'You can only edit orders for your own shop';
@@ -330,8 +345,11 @@ begin
     if locked_fields_changed and old.status not in ('new','confirmed') then
       raise exception 'This order is locked — production has already started';
     end if;
-    if new.status not in ('new','confirmed','cancelled') and old.status <> new.status then
-      raise exception 'Only Baker/Factory can move an order into baking/ready/delivered';
+    if new.status not in ('new','confirmed','cancelled','delivered') and old.status <> new.status then
+      raise exception 'Only Baker/Factory can move an order into baking/ready';
+    end if;
+    if new.status = 'delivered' and old.status not in ('ready','delivered') then
+      raise exception 'An order can only be marked delivered once it is ready';
     end if;
   else
     raise exception 'Not authorized to edit orders';
@@ -423,15 +441,24 @@ alter table public.catalog_categories enable row level security;
 alter table public.catalog_items enable row level security;
 alter table public.app_settings enable row level security;
 
--- SHOPS: any signed-in ACTIVE user can read; only owner/manager can write
+-- SHOPS: any signed-in ACTIVE user can read; owner/manager can add/rename/
+-- deactivate; only the OWNER can hard-delete a shop record
 drop policy if exists shops_select on public.shops;
 create policy shops_select on public.shops for select
   using (auth.uid() is not null and public.my_status() = 'active');
 
 drop policy if exists shops_write on public.shops;
-create policy shops_write on public.shops for all
+create policy shops_write on public.shops for insert
+  with check (public.my_status() = 'active' and public.my_role() in ('owner','manager'));
+
+drop policy if exists shops_update on public.shops;
+create policy shops_update on public.shops for update
   using (public.my_status() = 'active' and public.my_role() in ('owner','manager'))
   with check (public.my_status() = 'active' and public.my_role() in ('owner','manager'));
+
+drop policy if exists shops_delete on public.shops;
+create policy shops_delete on public.shops for delete
+  using (public.my_status() = 'active' and public.my_role() = 'owner');
 
 -- PROFILES: everyone signed in can read all profiles (needed for name lookups,
 -- the pending/suspended screen, and the owner's user-management panel) —
@@ -559,7 +586,7 @@ create policy cake_refs_delete on storage.objects for delete
 -- into the app, it's just a starting price sheet)
 -- ============================================================================
 insert into public.shops (name) values ('Shop A'), ('Shop B')
-  on conflict (name) do nothing;
+  on conflict (name) where active do nothing;
 
 insert into public.catalog_categories (name, sort_order) values
   ('Normal', 1), ('Chocolate', 2), ('Sweets Filling', 3),
