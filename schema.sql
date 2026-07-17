@@ -161,14 +161,15 @@ create table if not exists public.orders (
   status text not null default 'new'
     check (status in ('new','confirmed','baking','ready','delivered','cancelled')),
   amount numeric(10,2) not null default 0,
+  advance_amount numeric(10,2) not null default 0,
 
   -- custom-order approval gate
   approval_status text not null default 'not_required'
     check (approval_status in ('not_required','pending','approved','rejected')),
-  approved_by uuid references public.profiles(id),
+  approved_by uuid references public.profiles(id) on delete set null,
   approved_at timestamptz,
 
-  created_by uuid references public.profiles(id),
+  created_by uuid references public.profiles(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -183,12 +184,20 @@ alter table public.orders add column if not exists reference_photos text[] not n
 alter table public.orders add column if not exists approval_status text not null default 'not_required';
 alter table public.orders add column if not exists approved_by uuid references public.profiles(id);
 alter table public.orders add column if not exists approved_at timestamptz;
+alter table public.orders add column if not exists advance_amount numeric(10,2) not null default 0;
 do $$ begin
   alter table public.orders add constraint orders_kind_check check (order_kind in ('catalog','custom'));
 exception when duplicate_object then null; end $$;
 do $$ begin
   alter table public.orders add constraint orders_approval_check check (approval_status in ('not_required','pending','approved','rejected'));
 exception when duplicate_object then null; end $$;
+-- migration: allow deleting a team member's account without being blocked by
+-- (or silently orphaning) orders they created/approved — the order just
+-- keeps its snapshot data and loses the "created/approved by" link.
+alter table public.orders drop constraint if exists orders_created_by_fkey;
+alter table public.orders add constraint orders_created_by_fkey foreign key (created_by) references public.profiles(id) on delete set null;
+alter table public.orders drop constraint if exists orders_approved_by_fkey;
+alter table public.orders add constraint orders_approved_by_fkey foreign key (approved_by) references public.profiles(id) on delete set null;
 
 create index if not exists idx_orders_shop on public.orders(shop_id);
 create index if not exists idx_orders_status on public.orders(status);
@@ -201,13 +210,15 @@ create index if not exists idx_orders_kind on public.orders(order_kind);
 create table if not exists public.order_history (
   id uuid primary key default gen_random_uuid(),
   order_id uuid not null references public.orders(id) on delete cascade,
-  changed_by uuid references public.profiles(id),
+  changed_by uuid references public.profiles(id) on delete set null,
   change_type text not null,        -- 'created' | 'updated' | 'status_changed' | 'approval_changed'
   field_changed text,
   old_value text,
   new_value text,
   changed_at timestamptz not null default now()
 );
+alter table public.order_history drop constraint if exists order_history_changed_by_fkey;
+alter table public.order_history add constraint order_history_changed_by_fkey foreign key (changed_by) references public.profiles(id) on delete set null;
 
 create index if not exists idx_history_order on public.order_history(order_id);
 
@@ -299,12 +310,12 @@ begin
   non_status_changed :=
     (old.shop_id, old.customer_name, old.customer_phone, old.cake_type, old.size,
      old.flavor, old.celebration_type, old.design_notes, old.message_on_cake,
-     old.is_priority, old.delivery_date, old.delivery_time, old.amount,
+     old.is_priority, old.delivery_date, old.delivery_time, old.amount, old.advance_amount,
      old.order_kind, old.catalog_item_id, old.weight_kg, old.reference_photos)
     is distinct from
     (new.shop_id, new.customer_name, new.customer_phone, new.cake_type, new.size,
      new.flavor, new.celebration_type, new.design_notes, new.message_on_cake,
-     new.is_priority, new.delivery_date, new.delivery_time, new.amount,
+     new.is_priority, new.delivery_date, new.delivery_time, new.amount, new.advance_amount,
      new.order_kind, new.catalog_item_id, new.weight_kg, new.reference_photos);
 
   locked_fields_changed :=
@@ -398,7 +409,7 @@ declare
   cols text[] := array['shop_id','customer_name','customer_phone','cake_type','size',
                         'flavor','celebration_type','design_notes','message_on_cake',
                         'is_priority','delivery_date','delivery_time','status','amount',
-                        'weight_kg','approval_status'];
+                        'advance_amount','weight_kg','approval_status'];
   c text;
   old_json jsonb := to_jsonb(old);
   new_json jsonb := to_jsonb(new);
@@ -481,6 +492,23 @@ drop policy if exists profiles_update_owner on public.profiles;
 create policy profiles_update_owner on public.profiles for update
   using (public.my_status() = 'active' and public.my_role() = 'owner')
   with check (public.my_status() = 'active' and public.my_role() = 'owner');
+
+-- self-heal insert: normally handle_new_user() creates a profile automatically
+-- on first-ever Google sign-in. But if an Owner hard-deletes someone's profile
+-- (see profiles_delete below) and that person signs in again later, their
+-- auth.users row already exists so that trigger won't fire again — this
+-- policy lets the app recreate a safe, minimal profile for them client-side
+-- instead of leaving them stuck. Hardcoded-safe defaults only: nobody can
+-- use this to hand themselves an elevated role or an active/owner status.
+drop policy if exists profiles_insert_self on public.profiles;
+create policy profiles_insert_self on public.profiles for insert
+  with check (id = auth.uid() and role = 'shop_staff' and status = 'pending' and shop_id is null);
+
+-- only the OWNER can permanently delete an account (vs. Suspend/Remove,
+-- which just revoke access and keep the person attributed on old orders)
+drop policy if exists profiles_delete on public.profiles;
+create policy profiles_delete on public.profiles for delete
+  using (public.my_status() = 'active' and public.my_role() = 'owner' and id <> auth.uid());
 
 -- CATALOG: any active signed-in user can read (needed for the order form);
 -- only owner/manager can write
