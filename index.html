@@ -138,7 +138,9 @@
   .sidebar::after{content:'';position:absolute;bottom:-36px;right:-36px;width:140px;height:140px;pointer-events:none;opacity:.07;
     background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='34' fill='none' stroke='%23E8B94A' stroke-width='3'/%3E%3Ccircle cx='38' cy='40' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='60' cy='36' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='64' cy='58' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='42' cy='62' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='50' cy='50' r='3.5' fill='%23E8B94A'/%3E%3C/svg%3E") no-repeat center/contain;}
   .brand{display:flex;align-items:center;gap:.55rem;padding:0 .4rem;margin-bottom:2rem;}
-  .brand-mark{width:auto;height:30px;flex:none;object-fit:contain;filter:drop-shadow(0 6px 10px rgba(0,0,0,.3));}
+  .brand-mark-plate{display:inline-flex;align-items:center;justify-content:center;background:var(--paper);
+    border-radius:10px;padding:.4rem .65rem;box-shadow:0 6px 16px -6px rgba(0,0,0,.5), inset 0 0 0 1px rgba(43,36,31,.06);}
+  .brand-mark{width:auto;height:26px;flex:none;object-fit:contain;display:block;}
   .brand-text{font-family:var(--font-display);font-size:1.02rem;font-weight:600;line-height:1.05;}
   .brand-text small{display:block;font-family:var(--font-body);font-size:.62rem;color:var(--chalk-dim);
     text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin-top:2px;}
@@ -344,7 +346,8 @@
   .billing-row.total{border-top:1px dashed var(--line);margin-top:.3rem;padding-top:.6rem;font-weight:700;}
   .billing-row .amt{font-family:var(--font-mono);}
   .hero-logo{display:flex;flex-direction:column;align-items:center;gap:.75rem;margin-bottom:1.2rem;}
-  .hero-logo .brand-mark{width:auto;height:76px;}
+  .brand-mark-plate-lg{padding:.85rem 1.3rem;border-radius:14px;}
+  .brand-mark-lg{height:64px;}
   .hero-wordmark{font-family:var(--font-display);font-size:2rem;letter-spacing:.02em;line-height:1;color:var(--accent-cocoa);text-align:center;}
   .hero-wordmark small{display:block;font-family:var(--font-body);font-size:.7rem;letter-spacing:.26em;text-transform:uppercase;color:var(--chalk-dim);margin-top:.35rem;}
 
@@ -363,7 +366,8 @@
     .hamburger{display:flex;align-items:center;justify-content:center;width:38px;height:38px;flex:none;
       background:var(--bg-panel-2);border:1px solid var(--line);border-radius:8px;color:var(--chalk);}
     .topbar-brand{display:flex;align-items:center;}
-    .topbar-brand .brand-mark{height:24px;}
+    .topbar-brand .brand-mark{height:20px;}
+    .topbar-brand .brand-mark-plate{padding:.3rem .5rem;border-radius:8px;}
     .topbar-title{font-family:var(--font-display);font-size:1.05rem;font-weight:600;color:var(--chalk-dim);
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
@@ -1916,8 +1920,8 @@ function renderSettingsView(){
 /* ============================================================================
    ICONS
 ============================================================================ */
-function brandMark(){ return `<img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo">`; }
-function heroLogo(){ return `<div class="hero-logo"><img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></div>`; }
+function brandMark(){ return `<span class="brand-mark-plate"><img class="brand-mark" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></span>`; }
+function heroLogo(){ return `<div class="hero-logo"><span class="brand-mark-plate brand-mark-plate-lg"><img class="brand-mark brand-mark-lg" src="${LOGO_DATA_URI}" alt="Cakes &amp; Bakes logo"></span></div>`; }
 const iconMenu = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>`;
 const iconTicket = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z"/></svg>`;
 const iconPlus = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>`;
