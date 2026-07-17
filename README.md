@@ -1,8 +1,10 @@
-# Ticket Rail — Cake Order & Production System
+Cakes & Bakes — Ticket Rail
 
-**Ticket Rail** is a modern, single-file responsive web application designed to streamline order intake across multiple retail outlets (shops) and sync them in real-time with a centralized bakery factory production dashboard. 
-
-Built entirely with clean HTML5, Tailwind-inspired CSS custom properties, and vanilla ES6 JavaScript, it runs entirely in the browser and leverages **Supabase** as a robust, real-time serverless backend.
+Order intake for two retail shops, syncing into one factory production
+dashboard — with a live catalog, a separate custom-cake flow, Google-only
+sign-in, owner-level user management, role-locked views, an audit trail,
+session undo/redo, and Excel/CSV exports. Single HTML file, mobile-friendly,
+backed by your own free Supabase project.
 
 ---
 
