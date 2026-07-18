@@ -41,7 +41,8 @@ create table if not exists public.profiles (
   shop_id uuid references public.shops(id) on delete set null,
   created_at timestamptz not null default now(),
   last_active timestamptz not null default now(),
-  notifications_seen_at timestamptz not null default now()
+  notifications_seen_at timestamptz not null default now(),
+  push_enabled boolean not null default true
 );
 
 -- Add columns if upgrading an existing v1 database
@@ -49,6 +50,7 @@ alter table public.profiles add column if not exists email text not null default
 alter table public.profiles add column if not exists status text not null default 'active';
 alter table public.profiles add column if not exists last_active timestamptz not null default now();
 alter table public.profiles add column if not exists notifications_seen_at timestamptz not null default now();
+alter table public.profiles add column if not exists push_enabled boolean not null default true;
 do $$ begin
   alter table public.profiles add constraint profiles_status_check check (status in ('active','pending','suspended','removed'));
 exception when duplicate_object then null;
@@ -130,6 +132,9 @@ create table if not exists public.app_settings (
 );
 insert into public.app_settings (key, value)
   values ('custom_order_approval_threshold', '5000')
+  on conflict (key) do nothing;
+insert into public.app_settings (key, value)
+  values ('push_notifications_enabled', 'true')
   on conflict (key) do nothing;
 
 -- ----------------------------------------------------------------------------
@@ -351,6 +356,9 @@ begin
     if new.status = 'delivered' and old.status <> 'delivered' then
       raise exception 'Only Shop Staff/Owner/Manager can mark an order delivered';
     end if;
+    if new.status = 'cancelled' and old.status <> 'cancelled' then
+      raise exception 'Bakers cannot cancel orders — ask a Manager, Shop Staff, or the Owner';
+    end if;
   elsif role = 'shop_staff' then
     if old.shop_id <> public.my_shop() then
       raise exception 'You can only edit orders for your own shop';
@@ -358,8 +366,8 @@ begin
     if locked_fields_changed and old.status not in ('new','confirmed') then
       raise exception 'This order is locked — production has already started';
     end if;
-    if new.status not in ('new','confirmed','cancelled','delivered') and old.status <> new.status then
-      raise exception 'Only Baker/Factory can move an order into baking/ready';
+    if new.status not in ('cancelled','delivered') and old.status <> new.status then
+      raise exception 'Only Baker/Manager/Owner can confirm an order or move it through production';
     end if;
     if new.status = 'delivered' and old.status not in ('ready','delivered') then
       raise exception 'An order can only be marked delivered once it is ready';
@@ -454,20 +462,20 @@ alter table public.catalog_categories enable row level security;
 alter table public.catalog_items enable row level security;
 alter table public.app_settings enable row level security;
 
--- SHOPS: any signed-in ACTIVE user can read; owner/manager can add/rename/
--- deactivate; only the OWNER can hard-delete a shop record
+-- SHOPS: any signed-in ACTIVE user can read (needed for order forms); only
+-- the OWNER can add, rename, deactivate, or delete a shop
 drop policy if exists shops_select on public.shops;
 create policy shops_select on public.shops for select
   using (auth.uid() is not null and public.my_status() = 'active');
 
 drop policy if exists shops_write on public.shops;
 create policy shops_write on public.shops for insert
-  with check (public.my_status() = 'active' and public.my_role() in ('owner','manager'));
+  with check (public.my_status() = 'active' and public.my_role() = 'owner');
 
 drop policy if exists shops_update on public.shops;
 create policy shops_update on public.shops for update
-  using (public.my_status() = 'active' and public.my_role() in ('owner','manager'))
-  with check (public.my_status() = 'active' and public.my_role() in ('owner','manager'));
+  using (public.my_status() = 'active' and public.my_role() = 'owner')
+  with check (public.my_status() = 'active' and public.my_role() = 'owner');
 
 drop policy if exists shops_delete on public.shops;
 create policy shops_delete on public.shops for delete
@@ -759,6 +767,38 @@ drop trigger if exists trg_profiles_notify on public.profiles;
 create trigger trg_profiles_notify
   after insert on public.profiles
   for each row execute function public.profiles_notify();
+
+-- ============================================================================
+-- PUSH SUBSCRIPTIONS — one row per device that's opted into Web Push.
+-- The client writes/deletes its own rows (RLS below). The Edge Function
+-- that actually SENDS a push (see PUSH_NOTIFICATIONS_SETUP.md) uses the
+-- Supabase service-role key, which bypasses RLS entirely — that's expected
+-- and is how a backend function is supposed to read across all users.
+-- ============================================================================
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth_key text not null,
+  device_label text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_push_subs_profile on public.push_subscriptions(profile_id);
+
+alter table public.push_subscriptions enable row level security;
+
+drop policy if exists push_subs_select on public.push_subscriptions;
+create policy push_subs_select on public.push_subscriptions for select
+  using (profile_id = auth.uid());
+
+drop policy if exists push_subs_insert on public.push_subscriptions;
+create policy push_subs_insert on public.push_subscriptions for insert
+  with check (profile_id = auth.uid());
+
+drop policy if exists push_subs_delete on public.push_subscriptions;
+create policy push_subs_delete on public.push_subscriptions for delete
+  using (profile_id = auth.uid());
 
 -- ============================================================================
 -- STORAGE — bucket + policies for custom-cake reference photos
