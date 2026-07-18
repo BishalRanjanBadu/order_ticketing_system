@@ -615,7 +615,7 @@ create table if not exists public.notifications (
   target_profile_id uuid references public.profiles(id) on delete cascade,
   target_role text check (target_role in ('owner','manager','shop_staff','baker')),
   target_shop_id uuid references public.shops(id) on delete cascade,
-  notif_type text not null,   -- 'custom_approval_needed' | 'team_pending' | 'order_confirmed'
+  notif_type text not null,   -- 'custom_approval_needed' | 'team_pending' | 'order_received'
                                -- | 'order_ready' | 'custom_approved' | 'custom_rejected' | 'priority_flagged'
   title text not null,
   body text not null default '',
@@ -700,6 +700,8 @@ declare
   ref text := '#' || left(new.id::text, 8);
 begin
   if TG_OP = 'INSERT' then
+    perform public.notify('role','baker',null,null,'order_received',
+      'New order received', cust || ' at ' || shop || ' — ' || ref, new.id);
     if new.order_kind = 'custom' and new.approval_status = 'pending' then
       perform public.notify('role','owner',null,null,'custom_approval_needed',
         'Custom order needs approval', cust || ' at ' || shop || ' — ' || ref, new.id);
@@ -718,11 +720,6 @@ begin
   end if;
 
   -- TG_OP = 'UPDATE' from here on
-  if new.status = 'confirmed' and old.status is distinct from 'confirmed' then
-    perform public.notify('role','baker',null,null,'order_confirmed',
-      'Order ready for production', cust || ' at ' || shop || ' — ' || ref, new.id);
-  end if;
-
   if new.status = 'ready' and old.status is distinct from 'ready' then
     perform public.notify('role_shop','shop_staff',new.shop_id,null,'order_ready',
       'Order ready for pickup/delivery', cust || ' — ' || ref, new.id);
@@ -844,6 +841,23 @@ create policy cake_refs_insert on storage.objects for insert
 drop policy if exists cake_refs_delete on storage.objects;
 create policy cake_refs_delete on storage.objects for delete
   using (bucket_id = 'cake-references' and public.my_status() = 'active' and public.my_role() = 'owner');
+
+-- ============================================================================
+-- REALTIME — broadcasts every insert/update/delete on these tables live to
+-- every subscribed browser tab, so the ticket rail, factory board,
+-- analytics, and the notification bell all update instantly instead of
+-- needing a manual refresh. This still respects Row Level Security — a
+-- Shop Staff session only ever receives events for orders their existing
+-- orders_select policy already lets them see, nothing more.
+-- ============================================================================
+do $$ begin
+  alter publication supabase_realtime add table public.orders;
+exception when duplicate_object then null;
+end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.notifications;
+exception when duplicate_object then null;
+end $$;
 
 -- ============================================================================
 -- SEED DATA — shops + the 6-category catalog structure (edit prices freely
