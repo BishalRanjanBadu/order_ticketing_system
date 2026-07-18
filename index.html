@@ -497,6 +497,8 @@ const App = {
   notifications: [],
   notifTimer: null,
   notifPanelOpen: false,
+  realtimeChannel: null,
+  openOrderId: null,   // which order (if any) is currently shown in the detail modal
 };
 
 const STATUS_FLOW = ['new','confirmed','baking','ready','delivered'];
@@ -515,7 +517,7 @@ function boot(){
   App.sb = supabase.createClient(cfg.url, cfg.key);
   App.sb.auth.onAuthStateChange((event, session)=>{
     App.session = session;
-    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); stopNotifTimer(); renderAuthScreen(); }
+    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); stopNotifTimer(); stopRealtimeSync(); renderAuthScreen(); }
   });
   App.sb.auth.getSession().then(({data})=>{
     App.session = data.session;
@@ -628,6 +630,7 @@ async function afterLogin(){
   renderShell();
   startActivityTimer();
   startNotifTimer();
+  startRealtimeSync();
   registerServiceWorker().then(()=>{
     if(navigator.serviceWorker){
       navigator.serviceWorker.addEventListener('message', (event)=>{
@@ -689,6 +692,56 @@ function startNotifTimer(){
   App.notifTimer = setInterval(loadNotifications, 30000);
 }
 function stopNotifTimer(){ if(App.notifTimer){ clearInterval(App.notifTimer); App.notifTimer=null; } }
+
+/* ============================================================================
+   REALTIME SYNC — the actual fix for "everyone has to refresh to see
+   changes." Supabase broadcasts every insert/update/delete on a table (via
+   Postgres logical replication) to any subscribed client, live, over a
+   websocket — no polling needed. Same security model as everywhere else in
+   this app: Realtime respects Row Level Security, so a Shop Staff session
+   only ever receives events for orders at their own shop, exactly what
+   orders_select already allows them to query directly.
+
+   Scope of this pass: orders (the core workflow — ticket rail, factory
+   board, analytics all go live) and notifications (badge/panel update the
+   instant a row lands, instead of within 30s). Catalog/Team/Shops screens
+   are lower-traffic, rarely edited by two people at once, and still just
+   need a manual view-switch to refresh — a reasonable line to draw for now.
+============================================================================ */
+function startRealtimeSync(){
+  stopRealtimeSync();
+  App.realtimeChannel = App.sb
+    .channel('workflow-sync')
+    .on('postgres_changes', {event:'*', schema:'public', table:'orders'}, handleOrderRealtimeChange)
+    .on('postgres_changes', {event:'INSERT', schema:'public', table:'notifications'}, ()=> loadNotifications())
+    .subscribe();
+}
+function stopRealtimeSync(){
+  if(App.realtimeChannel){ App.sb.removeChannel(App.realtimeChannel); App.realtimeChannel = null; }
+}
+function handleOrderRealtimeChange(payload){
+  const { eventType, new: newRow, old: oldRow } = payload;
+  if(eventType === 'DELETE'){
+    App.orders = App.orders.filter(o=> o.id !== oldRow.id);
+  }else{
+    const idx = App.orders.findIndex(o=> o.id === newRow.id);
+    if(idx === -1) App.orders.push(newRow);
+    else App.orders[idx] = newRow;
+  }
+  // someone has this exact order open right now — don't silently overwrite
+  // fields they might be mid-editing, just let them know to reopen it
+  if(App.openOrderId && ((newRow && newRow.id === App.openOrderId) || (oldRow && oldRow.id === App.openOrderId))){
+    toast('This order was just updated elsewhere — close and reopen to see the latest.');
+  }
+  // only re-render views that actually show the order list/board, and only
+  // with the refresh style that's safe for each (rail = summary-only patch
+  // that leaves the search box/focus alone; factory/analytics have no
+  // inputs to disturb so a full re-render is fine)
+  if(App.view === 'orders') updateOrdersResults();
+  else if(App.view === 'factory') renderFactoryView();
+  else if(App.view === 'analytics') renderAnalyticsView();
+}
+
 async function loadNotifications(){
   const [{ data, error }, { data: dismissed, error: dErr }] = await Promise.all([
     App.sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(100),
@@ -939,7 +992,7 @@ function closeMobileNav(){ App.mobileNavOpen = false; const s=document.getElemen
    NOTIFICATIONS — dropdown panel
 ============================================================================ */
 const NOTIF_ICON = {
-  custom_approval_needed: '⏳', team_pending: '👤', order_confirmed: '🧾',
+  custom_approval_needed: '⏳', team_pending: '👤', order_received: '🆕', order_confirmed: '🧾',
   order_ready: '📦', custom_approved: '✅', custom_rejected: '✕', priority_flagged: '⚑',
 };
 function toggleNotifPanel(){
@@ -1195,6 +1248,7 @@ async function openOrderModal(id){
   const order = App.orders.find(o=>o.id===id);
   if(!order) return;
   modalTab = 'details';
+  App.openOrderId = id;
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop'; backdrop.id = 'modal-backdrop';
   document.body.appendChild(backdrop);
@@ -1203,7 +1257,7 @@ async function openOrderModal(id){
   drawOrderModal(order, history, photoUrls);
   backdrop.onclick = (e)=>{ if(e.target === backdrop) closeModal(); };
 }
-function closeModal(){ const b = document.getElementById('modal-backdrop'); if(b) b.remove(); }
+function closeModal(){ App.openOrderId = null; const b = document.getElementById('modal-backdrop'); if(b) b.remove(); }
 
 function openDeliveryBillingModal(order){
   const total = Number(order.amount||0);
