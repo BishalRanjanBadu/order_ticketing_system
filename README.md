@@ -54,6 +54,9 @@ approving them here won't help. Fix it one of two ways:
 
 1. Open `index.html` — double-click it, or host it anywhere static (GitHub
    Pages, Netlify, Vercel). No build step needed.
+   **If you want push notifications, `sw.js` must be uploaded to the same
+   folder as `index.html`** (same level, not a subfolder) — see
+   `PUSH_NOTIFICATIONS_SETUP.md` for the rest of that setup.
 2. The app ships with your Supabase Project URL + anon key already wired in
    (see `index.html` → `getConfig()`), so teammates can open the link and go
    straight to **Sign in with Google** — nobody has to paste API keys. If you
@@ -80,15 +83,46 @@ approving them here won't help. Fix it one of two ways:
 | Role | Sees | Can do |
 |---|---|---|
 | **Owner** | Everything | Full access everywhere: orders, factory board, analytics, exports, catalog, team management, shops (including delete), settings, undo/redo, delete orders |
-| **Manager** | Everything except Team/Settings | Same as Owner except cannot delete orders, cannot manage team accounts or reach Settings |
-| **Shop Staff** | **Orders + New Order only** | Create/edit orders for their own shop; locked out of editing cake specs once status reaches "Baking"; can move an order through New → Confirmed → Cancelled, and mark it **Delivered** once it's Ready — but cannot touch Baking/Ready themselves (that's the factory's job) |
-| **Baker / Factory** | **Factory Board only** | Sees every order from both shops; can only change status, and only through New → Confirmed → Baking → Ready — **cannot mark an order Delivered** (that's the shop's job when the customer picks it up) |
+| **Manager** | Everything except Team/Settings/Export/Shops | Same as Owner for day-to-day order work, but cannot delete orders, manage team accounts, reach Settings, run exports, or manage shops — those four are Owner-only |
+| **Shop Staff** | **Orders + New Order only** | Create/edit orders for their own shop; locked out of editing cake specs once status reaches "Baking"; can **Cancel** an order or mark it **Delivered** once it's Ready — but cannot Confirm a new order or touch Baking/Ready themselves (that's Baker/Manager/Owner's job) |
+| **Baker / Factory** | **Factory Board only** | Sees every order from both shops; can only change status, through New → Confirmed → Baking → Ready — **cannot Cancel an order** and **cannot mark it Delivered** (both are shop/management decisions, not production ones) |
 
 Every one of these rules is enforced **in the database** (Postgres Row Level
 Security + triggers in `schema.sql`), not just hidden in the UI — a locked-
 down role can't work around it by calling the API directly.
 
 ## What's new in this pass
+
+- **Real push notifications** — the in-app bell above now has a companion
+  delivery channel: a genuine OS-level notification (lock screen,
+  notification tray) even when the app is closed, via Web Push. This needs
+  a one-time deployment step on your end — see
+  **`PUSH_NOTIFICATIONS_SETUP.md`**, not optional, the notifications won't
+  arrive until that's done. Two toggles control it: each person can turn
+  push on/off for their own device (in the notification panel), and the
+  Owner has a separate organization-wide kill switch in **Settings**. See
+  **`PUSH_NOTIFICATION_DECISION.md`** for the reasoning behind the approach
+  and its platform limitations (notably iPhone/Safari).
+- **Tighter status permissions** — Bakers can no longer cancel an order
+  (only Manager, Shop Staff, or Owner can); Shop Staff can no longer move an
+  order from New to Confirmed (only Baker, Manager, or Owner can) — Shop
+  Staff still handles Cancel and the final Delivered handoff.
+- **Export and Shops are now Owner-only** — Manager lost access to both.
+- **Notification framework** — a bell icon (top bar on mobile, sidebar on
+  desktop) with an unread badge, driven entirely by database triggers so
+  each role only sees what's actually theirs to act on:
+
+  | Role | Gets notified when |
+  |---|---|
+  | **Owner** | a custom order needs approval; a new teammate signs in and needs activating; a rush order is flagged; an order becomes Ready |
+  | **Manager** | a custom order needs approval; a rush order is flagged; an order becomes Ready |
+  | **Shop Staff** (their own shop only) | one of their orders is marked Ready (time to arrange pickup/delivery); their custom order is approved or rejected |
+  | **Baker** | an order is Confirmed (ready to enter the production queue); a rush order is flagged |
+
+  Clicking a notification jumps straight to that order. "Mark all read"
+  clears the badge. See the limitations below for how read-tracking and
+  polling work under the hood. Full reasoning for who gets what is in
+  **`NOTIFICATION_FRAMEWORK.md`**.
 
 - **Logo, properly rendered** — the source photo had the outer edges of the
   first and last letters clipped at the frame boundary; it's been rebuilt
@@ -139,6 +173,16 @@ down role can't work around it by calling the API directly.
   forms and filters stack to a single column.
 
 ## A few honest limitations, worth knowing
+
+- **Notifications are in-app only, on a 30-second poll** — no push
+  notifications, no sound, no email/SMS, and nothing arrives if the app tab
+  isn't open. There's also no per-notification read flag — instead, each
+  person has one "notifications seen up to" timestamp, and "Mark all read"
+  just moves it forward, so partial/individual read-state isn't tracked
+  (this keeps a broadcast to an entire role from needing a separate
+  read-tracking row per person). A true push/real-time version would use
+  Supabase's Realtime feature or a mobile push provider — both are
+  reasonable v-next upgrades once the basics are proven out.
 
 - **Deleting a team account is permanent and only removes their *app*
   profile** — their Google/Supabase Auth account itself isn't touched (that
