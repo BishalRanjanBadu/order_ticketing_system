@@ -10,6 +10,14 @@
   This is the one piece of the app that keeps running in the background
   even when no tab is open — it's how a notification can appear on a
   lock screen or in the OS notification tray at all.
+
+  One honest limitation: syncing an OS-tray swipe/dismiss back to the
+  in-app list only works while a tab of the app is open somewhere (even in
+  the background) — a service worker can't safely call Supabase on its own
+  without holding a copy of your login session, which it deliberately
+  doesn't do. If no tab is open when you swipe a notification away, it'll
+  still show once in the in-app list until you dismiss it there too (or it
+  naturally gets superseded by a newer notification for the same order).
 */
 
 self.addEventListener('install', (event) => {
@@ -33,16 +41,24 @@ self.addEventListener('push', (event) => {
     badge: data.badge || undefined,
     tag: data.order_id || undefined,   // same order_id replaces, rather than stacking duplicates
     renotify: !!data.order_id,
-    data: { order_id: data.order_id || null, url: data.url || './' },
+    data: { notification_id: data.id || null, order_id: data.order_id || null, url: data.url || './' },
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+function notifyOpenTabs(message) {
+  return self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+    for (const client of clientList) client.postMessage(message);
+  });
+}
+
 // Person tapped the notification — focus an existing tab if one's open,
-// otherwise open a new one, and jump straight to the relevant order.
+// otherwise open a new one, and jump straight to the relevant order. A
+// click also removes it from the OS tray, so sync that as a dismiss too.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const notifId = event.notification.data && event.notification.data.notification_id;
   const orderId = event.notification.data && event.notification.data.order_id;
   const baseUrl = (event.notification.data && event.notification.data.url) || './';
   const targetUrl = orderId ? `${baseUrl}?open_order=${orderId}` : baseUrl;
@@ -52,10 +68,18 @@ self.addEventListener('notificationclick', (event) => {
       for (const client of clientList) {
         if ('focus' in client) {
           client.postMessage({ type: 'open_order', order_id: orderId });
+          if (notifId) client.postMessage({ type: 'notification_dismissed', notification_id: notifId });
           return client.focus();
         }
       }
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
     })
   );
+});
+
+// Person swiped it away (or hit the OS's own "clear" / "clear all") without
+// tapping it — same sync, so the in-app list matches the tray.
+self.addEventListener('notificationclose', (event) => {
+  const notifId = event.notification.data && event.notification.data.notification_id;
+  if (notifId) event.waitUntil(notifyOpenTabs({ type: 'notification_dismissed', notification_id: notifId }));
 });
