@@ -178,13 +178,15 @@
   .notif-push-row .sub{font-size:.74rem;line-height:1.4;}
   .notif-panel-head h4{font-size:.9rem;}
   .notif-list{overflow-y:auto;}
-  .notif-item{display:flex;gap:.7rem;padding:.8rem 1.1rem;border-bottom:1px solid var(--line);}
+  .notif-item{position:relative;display:flex;align-items:stretch;gap:.4rem;padding:.5rem .6rem .5rem 1.1rem;
+    border-bottom:1px solid var(--line);touch-action:pan-y;user-select:none;background:var(--bg-panel);}
   .notif-item:last-child{border-bottom:none;}
-  .notif-item.clickable{cursor:pointer;}
-  .notif-item.clickable:hover{background:var(--bg-panel-2);}
-  .notif-item.unread{background:rgba(234,95,114,.06);}
-  .notif-item.unread .notif-title::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
-    background:var(--accent-coral);margin-right:.4em;vertical-align:middle;}
+  .notif-item-content{display:flex;gap:.7rem;flex:1;min-width:0;padding:.3rem 0;}
+  .notif-item-content.clickable{cursor:pointer;border-radius:6px;}
+  .notif-item-content.clickable:hover{background:var(--bg-panel-2);}
+  .notif-dismiss{flex:none;align-self:center;width:26px;height:26px;border-radius:50%;border:none;
+    background:transparent;color:var(--chalk-dim);font-size:.8rem;line-height:1;}
+  .notif-dismiss:hover{background:rgba(192,87,76,.18);color:#f0b3ac;}
   .notif-icon{font-size:1.1rem;flex:none;line-height:1.3;}
   .notif-body{min-width:0;}
   .notif-title{font-size:.82rem;font-weight:700;}
@@ -630,6 +632,7 @@ async function afterLogin(){
     if(navigator.serviceWorker){
       navigator.serviceWorker.addEventListener('message', (event)=>{
         if(event.data?.type === 'open_order' && event.data.order_id) openOrderModal(event.data.order_id);
+        if(event.data?.type === 'notification_dismissed' && event.data.notification_id) dismissNotification(event.data.notification_id);
       });
     }
   });
@@ -687,22 +690,39 @@ function startNotifTimer(){
 }
 function stopNotifTimer(){ if(App.notifTimer){ clearInterval(App.notifTimer); App.notifTimer=null; } }
 async function loadNotifications(){
-  const { data, error } = await App.sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(50);
-  if(error) return;
-  App.notifications = data || [];
+  const [{ data, error }, { data: dismissed, error: dErr }] = await Promise.all([
+    App.sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(100),
+    App.sb.from('notification_dismissals').select('notification_id').eq('profile_id', App.profile.id),
+  ]);
+  if(error || dErr) return;
+  const dismissedIds = new Set((dismissed||[]).map(d=>d.notification_id));
+  App.notifications = (data||[]).filter(n=> !dismissedIds.has(n.id));
   updateNotifBadge();
   if(App.notifPanelOpen) drawNotifPanel();
 }
-function unreadNotifCount(){
-  const seen = App.profile?.notifications_seen_at ? new Date(App.profile.notifications_seen_at).getTime() : 0;
-  return App.notifications.filter(n=> new Date(n.created_at).getTime() > seen).length;
-}
 function updateNotifBadge(){
-  const count = unreadNotifCount();
+  const count = App.notifications.length;
   document.querySelectorAll('.notif-badge').forEach(el=>{
     if(count > 0){ el.textContent = count > 9 ? '9+' : String(count); el.style.display = 'flex'; }
     else{ el.style.display = 'none'; }
   });
+}
+async function dismissNotification(id){
+  App.notifications = App.notifications.filter(n=> n.id !== id);
+  updateNotifBadge();
+  if(App.notifPanelOpen) drawNotifPanel();
+  const { error } = await App.sb.from('notification_dismissals').insert({notification_id:id, profile_id:App.profile.id});
+  if(error && error.code !== '23505') console.warn('dismiss failed', error); // 23505 = already dismissed, harmless
+}
+async function clearAllNotifications(){
+  const ids = App.notifications.map(n=>n.id);
+  if(ids.length === 0) return;
+  App.notifications = [];
+  updateNotifBadge();
+  drawNotifPanel();
+  const rows = ids.map(id=>({notification_id:id, profile_id:App.profile.id}));
+  const { error } = await App.sb.from('notification_dismissals').upsert(rows, {onConflict:'notification_id,profile_id'});
+  if(error) toast(error.message, true);
 }
 
 /* ============================================================================
@@ -930,35 +950,84 @@ function toggleNotifPanel(){
 function drawNotifPanel(){
   const mount = document.getElementById('notif-panel-mount');
   if(!mount) return;
-  const seen = App.profile?.notifications_seen_at ? new Date(App.profile.notifications_seen_at).getTime() : 0;
   mount.innerHTML = `
     <div class="notif-overlay" id="notif-overlay"></div>
     <div class="notif-panel">
       <div class="notif-panel-head">
         <h4>Notifications</h4>
-        <button class="btn btn-ghost btn-sm" id="notif-mark-read">Mark all read</button>
+        <button class="btn btn-ghost btn-sm" id="notif-clear-all" ${App.notifications.length?'':'disabled'}>Clear all</button>
       </div>
       <div class="notif-push-row" id="notif-push-row">
         <span class="sub">Checking push status…</span>
       </div>
-      <div class="notif-list">
+      <div class="notif-list" id="notif-list">
         ${App.notifications.length ? App.notifications.map(n=>`
-          <div class="notif-item ${new Date(n.created_at).getTime()>seen?'unread':''} ${n.order_id?'clickable':''}" data-order="${n.order_id||''}">
-            <div class="notif-icon">${NOTIF_ICON[n.notif_type]||'🔔'}</div>
-            <div class="notif-body">
-              <div class="notif-title">${escapeHtml(n.title)}</div>
-              <div class="notif-text">${escapeHtml(n.body)}</div>
-              <div class="notif-time">${timeAgo(n.created_at)}</div>
+          <div class="notif-item" data-id="${n.id}" data-order="${n.order_id||''}">
+            <div class="notif-item-content ${n.order_id?'clickable':''}">
+              <div class="notif-icon">${NOTIF_ICON[n.notif_type]||'🔔'}</div>
+              <div class="notif-body">
+                <div class="notif-title">${escapeHtml(n.title)}</div>
+                <div class="notif-text">${escapeHtml(n.body)}</div>
+                <div class="notif-time">${timeAgo(n.created_at)}</div>
+              </div>
             </div>
-          </div>`).join('') : `<div class="notif-empty">Nothing yet — you'll see updates here as orders move.</div>`}
+            <button class="notif-dismiss" data-id="${n.id}" aria-label="Dismiss">✕</button>
+          </div>`).join('') : `<div class="notif-empty">You're all caught up.</div>`}
       </div>
     </div>`;
   document.getElementById('notif-overlay').onclick = toggleNotifPanel;
-  document.getElementById('notif-mark-read').onclick = markAllNotifsRead;
-  mount.querySelectorAll('.notif-item.clickable').forEach(el=>{
-    el.onclick = ()=>{ toggleNotifPanel(); openOrderModal(el.dataset.order); };
+  document.getElementById('notif-clear-all').onclick = clearAllNotifications;
+  mount.querySelectorAll('.notif-item-content.clickable').forEach(el=>{
+    el.onclick = ()=>{ const id = el.closest('.notif-item').dataset.order; toggleNotifPanel(); openOrderModal(id); };
   });
+  mount.querySelectorAll('.notif-dismiss').forEach(btn=>{
+    btn.onclick = (e)=>{ e.stopPropagation(); dismissNotifElement(btn.closest('.notif-item')); };
+  });
+  wireSwipeToDismiss(mount);
   refreshPushRow();
+}
+/* swipe-to-dismiss — drag an item sideways past a threshold to remove it,
+   same gesture as any phone notification shade or mail app */
+function wireSwipeToDismiss(mount){
+  mount.querySelectorAll('.notif-item').forEach(item=>{
+    let startX = null, dx = 0, dragging = false;
+    const onDown = (e)=>{
+      startX = (e.touches ? e.touches[0].clientX : e.clientX);
+      dragging = true; item.style.transition = 'none';
+    };
+    const onMove = (e)=>{
+      if(!dragging) return;
+      const x = (e.touches ? e.touches[0].clientX : e.clientX);
+      dx = x - startX;
+      item.style.transform = `translateX(${dx}px)`;
+      item.style.opacity = String(Math.max(0.2, 1 - Math.abs(dx)/200));
+    };
+    const onUp = ()=>{
+      if(!dragging) return;
+      dragging = false;
+      item.style.transition = 'transform .2s ease, opacity .2s ease';
+      if(Math.abs(dx) > 90){ dismissNotifElement(item); }
+      else{ item.style.transform = 'translateX(0)'; item.style.opacity = '1'; }
+      dx = 0;
+    };
+    item.addEventListener('pointerdown', onDown);
+    item.addEventListener('pointermove', onMove);
+    item.addEventListener('pointerup', onUp);
+    item.addEventListener('pointerleave', ()=>{ if(dragging) onUp(); });
+  });
+}
+function dismissNotifElement(item){
+  const id = item.dataset.id;
+  item.style.transition = 'transform .18s ease, opacity .18s ease, max-height .18s ease .1s';
+  item.style.transform = `translateX(${item.style.transform.includes('-') ? '-120%' : '120%'})`;
+  item.style.opacity = '0';
+  setTimeout(()=>{ item.remove(); dismissNotification(id); updateClearAllButton(); }, 180);
+}
+function updateClearAllButton(){
+  const btn = document.getElementById('notif-clear-all');
+  if(btn) btn.disabled = App.notifications.length === 0;
+  const list = document.getElementById('notif-list');
+  if(list && App.notifications.length === 0) list.innerHTML = `<div class="notif-empty">You're all caught up.</div>`;
 }
 async function refreshPushRow(){
   const row = document.getElementById('notif-push-row');
@@ -975,14 +1044,6 @@ async function refreshPushRow(){
     row.innerHTML = `<span class="sub">Get notifications on this device, even when the app is closed.</span><button class="btn btn-primary btn-sm" id="notif-push-toggle">Enable</button>`;
     document.getElementById('notif-push-toggle').onclick = async ()=>{ await subscribeToPush(); refreshPushRow(); };
   }
-}
-async function markAllNotifsRead(){
-  const now = new Date().toISOString();
-  const { error } = await App.sb.from('profiles').update({notifications_seen_at: now}).eq('id', App.profile.id);
-  if(error){ toast(error.message, true); return; }
-  App.profile.notifications_seen_at = now;
-  updateNotifBadge();
-  drawNotifPanel();
 }
 function timeAgo(ts){
   const s = Math.floor((Date.now() - new Date(ts).getTime())/1000);
