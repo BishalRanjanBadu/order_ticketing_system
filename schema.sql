@@ -603,11 +603,11 @@ create policy history_select on public.order_history for select
 --   target_profile_id  → one specific person
 --   target_role         → every ACTIVE user with that role
 --   target_role + target_shop_id → every ACTIVE shop_staff at one shop
--- Read state is intentionally simple: instead of a per-notification read
--- flag (which would need a join table for broadcasts to a whole role),
--- each profile has a single notifications_seen_at timestamp — "unread"
--- just means created_at > my notifications_seen_at. Opening the panel
--- marks everything seen at once.
+-- Dismissal works like a normal notification tray: swiping one away, or
+-- hitting "Clear all", removes it from THAT person's view only — everyone
+-- else it was also targeted at still sees it. See notification_dismissals
+-- below, a join table, since a broadcast notification is one row shared by
+-- many recipients and each recipient needs their own dismiss state.
 -- ============================================================================
 create table if not exists public.notifications (
   id uuid primary key default gen_random_uuid(),
@@ -640,6 +640,29 @@ create policy notifications_select on public.notifications for select
   );
 -- no insert/update/delete policy for regular roles — every row is created
 -- by the security-definer helper function below, called only from triggers.
+
+-- ----------------------------------------------------------------------------
+-- NOTIFICATION DISMISSALS — swiping a notification away, or "Clear all",
+-- inserts a row here rather than deleting the notification itself (which is
+-- shared by every recipient of a broadcast). Each person only ever sees
+-- notifications targeted at them AND not in their own dismissal list.
+-- ----------------------------------------------------------------------------
+create table if not exists public.notification_dismissals (
+  notification_id uuid not null references public.notifications(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  dismissed_at timestamptz not null default now(),
+  primary key (notification_id, profile_id)
+);
+
+alter table public.notification_dismissals enable row level security;
+
+drop policy if exists notif_dismiss_select on public.notification_dismissals;
+create policy notif_dismiss_select on public.notification_dismissals for select
+  using (profile_id = auth.uid());
+
+drop policy if exists notif_dismiss_insert on public.notification_dismissals;
+create policy notif_dismiss_insert on public.notification_dismissals for insert
+  with check (profile_id = auth.uid());
 
 create or replace function public.notify(
   p_target_type text, p_target_role text, p_target_shop_id uuid,
