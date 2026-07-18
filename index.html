@@ -134,7 +134,8 @@
     margin-bottom:1.2rem;font-size:1.6rem;background:var(--bg-panel-2);}
 
   .shell{display:grid;grid-template-columns:220px 1fr;min-height:100vh;}
-  .sidebar{background:var(--bg-panel);border-right:1px solid var(--line);padding:1.4rem 1rem;display:flex;flex-direction:column;position:relative;overflow:hidden;}
+  .sidebar{background:var(--bg-panel);border-right:1px solid var(--line);padding:1.4rem 1rem;display:flex;flex-direction:column;
+    position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;}
   .sidebar::after{content:'';position:absolute;bottom:-36px;right:-36px;width:140px;height:140px;pointer-events:none;opacity:.07;
     background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='34' fill='none' stroke='%23E8B94A' stroke-width='3'/%3E%3Ccircle cx='38' cy='40' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='60' cy='36' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='64' cy='58' r='5' fill='%23E8B94A'/%3E%3Ccircle cx='42' cy='62' r='4' fill='%23E8B94A'/%3E%3Ccircle cx='50' cy='50' r='3.5' fill='%23E8B94A'/%3E%3C/svg%3E") no-repeat center/contain;}
   .brand-row{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:2rem;padding:0 .4rem;}
