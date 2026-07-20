@@ -39,16 +39,13 @@ open session, and genuine OS-level push notifications — all running on a
 static host.
 
 ## Screenshots
+<img width="610" height="1141" alt="mobile view" src="https://github.com/user-attachments/assets/b454ad46-5d08-4859-ba33-034520c1b193" />
+<img width="1366" height="589" alt="Screenshot (167)" src="https://github.com/user-attachments/assets/0c219445-f0f5-40a2-b37e-c766287b2274" />
+<img width="1366" height="588" alt="Screenshot (168)" src="https://github.com/user-attachments/assets/8c456449-8d17-4fe8-aba9-338ec4dbaee3" />
 
-> _Add screenshots of the Orders rail, Factory Board, and mobile view here
-> — e.g. `docs/screenshot-orders.png`, `docs/screenshot-factory.png`._
 
 ```
-docs/
-├── screenshot-orders.png
-├── screenshot-factory-board.png
-├── screenshot-past-orders.png
-└── screenshot-mobile.png
+
 ```
 
 ## Key Features
