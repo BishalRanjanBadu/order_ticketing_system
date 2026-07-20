@@ -102,6 +102,7 @@
   input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-coral);outline-offset:1px;}
   label{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--chalk-dim);display:block;margin-bottom:.35em;}
   .field{margin-bottom:1rem;}
+  .field-hint{font-size:.72rem;color:var(--chalk-dim);margin-top:.35em;}
   .field-row{display:grid;grid-template-columns:1fr 1fr;gap:.85rem;}
   .field-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.85rem;}
 
@@ -382,6 +383,8 @@
   .balance-readout{font-family:var(--font-mono);font-size:1rem;font-weight:700;color:var(--accent-coral);padding:.62em 0;}
   .balance-readout.paid{color:var(--accent-mint);}
   .tag-balance{background:#fde6d3;color:#9a5417;}
+  .tag-archived-delivered{background:#e6e9e6;color:#5c665f;}
+  .tag-archived-cancelled{background:#f4dcd8;color:#a13d31;}
   .billing-summary{background:var(--bg-panel-2);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;}
   .billing-row{display:flex;justify-content:space-between;padding:.35rem 0;font-size:.86rem;}
   .billing-row.total{border-top:1px dashed var(--line);margin-top:.3rem;padding-top:.6rem;font-weight:700;}
@@ -488,6 +491,7 @@ const App = {
   settings: {},
   view: 'orders',
   filters: { shop: '', status: '', from: '', to: '', q: '' },
+  pastFilters: { shop: '', status: '', from: '', to: '', q: '' },
   orderForm: { mode:'catalog', categoryId:null, itemId:null, weight:1, photos:[] }, // photos: [{file, blob, url}]
   activityTimer: null,
   blockedTimer: null,
@@ -507,6 +511,35 @@ const LOGO_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAvgAAADJCAY
 const STATUS_LABEL = {new:'New', confirmed:'Confirmed', baking:'Baking', ready:'Ready', delivered:'Delivered', cancelled:'Cancelled'};
 const PHOTO_BUCKET = 'cake-references';
 const MAX_PHOTOS = 5;
+
+/* ============================================================================
+   PAST ORDERS — grace period is a live computed comparison, never a stored
+   flag. See PAST_ORDERS_SETUP.md for the full reasoning: no cron job, no
+   background process — whether an order is "still today" or "archived" is
+   recalculated fresh every time a screen renders, using the viewer's local
+   calendar date.
+============================================================================ */
+function localDateStr(d){
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+function todayStr(){ return localDateStr(new Date()); }
+function archiveDateStr(order){
+  const ts = order.status==='delivered' ? order.delivered_at : order.status==='cancelled' ? order.cancelled_at : null;
+  return ts ? localDateStr(new Date(ts)) : null;
+}
+/* still shows on the active rail / factory board's Delivered column */
+function isInGrace(order){
+  if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
+  const d = archiveDateStr(order);
+  return d === todayStr();
+}
+/* fully moved to Past Orders, locked to everyone but the Owner */
+function isArchived(order){
+  if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
+  const d = archiveDateStr(order);
+  return !!d && d !== todayStr();
+}
 
 /* ============================================================================
    BOOT
@@ -931,6 +964,7 @@ function isViewAllowed(role, view){
 function navItemsFor(role){
   const items = [];
   if(role !== 'baker') items.push({id:'orders', label:'Orders', icon:iconTicket});
+  if(['owner','manager','shop_staff'].includes(role)) items.push({id:'past', label:'Past Orders', icon:iconArchive});
   if(['owner','manager','shop_staff'].includes(role)) items.push({id:'new', label:'New Order', icon:iconPlus});
   if(['owner','manager','baker'].includes(role)) items.push({id:'factory', label:'Factory Board', icon:iconLayers});
   if(['owner','manager'].includes(role)) items.push({id:'analytics', label:'Analytics', icon:iconChart});
@@ -1114,6 +1148,7 @@ async function renderView(){
   if(!isViewAllowed(App.profile.role, App.view)) App.view = defaultViewFor(App.profile.role);
   switch(App.view){
     case 'orders': renderOrdersView(); break;
+    case 'past': renderPastOrdersView(); break;
     case 'new': App.orderForm = {mode:'catalog', categoryId:App.catalog[0]?.id||null, itemId:null, weight:1, photos:[]}; renderNewOrderView(); break;
     case 'factory': renderFactoryView(); break;
     case 'analytics': renderAnalyticsView(); break;
@@ -1132,6 +1167,7 @@ async function renderView(){
 function applyFilters(list){
   const f = App.filters;
   return list.filter(o=>{
+    if(isArchived(o)) return false; // moved to Past Orders — see renderPastOrdersView
     if(f.shop && o.shop_id !== f.shop) return false;
     if(f.status && o.status !== f.status) return false;
     if(f.from && o.delivery_date < f.from) return false;
@@ -1238,6 +1274,90 @@ function emptyStateDoodle(){
     <path d="M14 60 h72 a4 4 0 0 1 4 4 v4 a6 6 0 0 1-6 6 H16 a6 6 0 0 1-6-6 v-4 a4 4 0 0 1 4-4Z" fill="none" stroke="#EA5F72" stroke-width="3"/>
     <circle cx="38" cy="44" r="2.6" fill="#8B7FC7"/><circle cx="56" cy="40" r="2.6" fill="#8B7FC7"/><circle cx="66" cy="50" r="2.6" fill="#8B7FC7"/>
   </svg>`;
+}
+
+/* ============================================================================
+   PAST ORDERS — Delivered/Cancelled orders, once their grace period (the
+   rest of the calendar day they were archived on) has ended. Owner/Manager/
+   Shop Staff can view; only Owner can act on anything here (see
+   canEditDetails/canChangeStatusTo above, and the DB trigger that enforces
+   the same rule server-side).
+============================================================================ */
+function pastOrdersList(){ return App.orders.filter(isArchived); }
+function applyPastFilters(list){
+  const f = App.pastFilters;
+  return list.filter(o=>{
+    if(f.shop && o.shop_id !== f.shop) return false;
+    if(f.status && o.status !== f.status) return false;
+    const archived = archiveDateStr(o);
+    if(f.from && archived < f.from) return false;
+    if(f.to && archived > f.to) return false;
+    if(f.q){
+      const q = f.q.toLowerCase();
+      if(!(o.customer_name.toLowerCase().includes(q)
+        || (o.customer_phone||'').includes(q)
+        || (o.cake_type||'').toLowerCase().includes(q)
+        || (o.catalog_item_snapshot||'').toLowerCase().includes(q)
+      )) return false;
+    }
+    return true;
+  });
+}
+function renderPastOrdersView(){
+  const content = document.getElementById('content');
+  const readOnly = App.profile.role !== 'owner';
+  const filtered = applyPastFilters(pastOrdersList()).slice().sort((a,b)=> archiveDateStr(b).localeCompare(archiveDateStr(a)));
+  content.innerHTML = `
+    <div class="content-head"><div><h2>Past Orders</h2><div class="sub" id="past-summary">${filtered.length} of ${pastOrdersList().length} archived order${pastOrdersList().length===1?'':'s'}</div></div></div>
+    ${readOnly ? `<div class="note">You can view past orders here. Editing, restoring, or deleting one is Owner-only.</div>` : ''}
+    <div class="filterbar">
+      <div class="field grow-2"><label>Search</label><input type="text" id="pf-q" placeholder="Customer, phone, cake…" value="${escapeAttr(App.pastFilters.q)}"></div>
+      <div class="field"><label>Shop</label><select id="pf-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}" ${App.pastFilters.shop===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Status</label><select id="pf-status"><option value="">Delivered + Cancelled</option><option value="delivered" ${App.pastFilters.status==='delivered'?'selected':''}>Delivered only</option><option value="cancelled" ${App.pastFilters.status==='cancelled'?'selected':''}>Cancelled only</option></select></div>
+      <div class="field"><label>Archived from</label><input type="date" id="pf-from" value="${App.pastFilters.from}"></div>
+      <div class="field"><label>Archived to</label><input type="date" id="pf-to" value="${App.pastFilters.to}"></div>
+      <button class="btn btn-ghost" id="pf-clear">Clear</button>
+    </div>
+    <div class="rail" id="past-rail"></div>`;
+  wirePastFilterBar();
+  updatePastResults();
+}
+function wirePastFilterBar(){
+  document.getElementById('pf-q').oninput = e=>{ App.pastFilters.q = e.target.value; updatePastResults(); };
+  document.getElementById('pf-shop').onchange = e=>{ App.pastFilters.shop = e.target.value; updatePastResults(); };
+  document.getElementById('pf-status').onchange = e=>{ App.pastFilters.status = e.target.value; updatePastResults(); };
+  document.getElementById('pf-from').onchange = e=>{ App.pastFilters.from = e.target.value; updatePastResults(); };
+  document.getElementById('pf-to').onchange = e=>{ App.pastFilters.to = e.target.value; updatePastResults(); };
+  document.getElementById('pf-clear').onclick = ()=>{ App.pastFilters = {shop:'',status:'',from:'',to:'',q:''}; const qEl=document.getElementById('pf-q'); if(qEl) qEl.value=''; updatePastResults(); };
+}
+function updatePastResults(){
+  const rail = document.getElementById('past-rail');
+  if(!rail) return;
+  const all = pastOrdersList();
+  const filtered = applyPastFilters(all).slice().sort((a,b)=> archiveDateStr(b).localeCompare(archiveDateStr(a)));
+  const summary = document.getElementById('past-summary');
+  if(summary) summary.textContent = `${filtered.length} of ${all.length} archived order${all.length===1?'':'s'}`;
+  if(filtered.length === 0){
+    rail.innerHTML = emptyState('Nothing archived yet', 'Delivered and cancelled orders land here once their day is over.');
+    return;
+  }
+  rail.innerHTML = filtered.map(o=>pastTicketHtml(o)).join('');
+  rail.querySelectorAll('.ticket').forEach(t=>{ t.onclick = ()=> openOrderModal(t.dataset.id); });
+}
+function pastTicketHtml(o){
+  const amt = Number(o.amount||0).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+  const itemLabel = o.order_kind === 'custom' ? 'Custom cake' : (o.catalog_item_snapshot || o.cake_type || 'Cake');
+  const tag = o.status==='delivered' ? '<span class="tag tag-archived-delivered">Delivered</span>' : '<span class="tag tag-archived-cancelled">Cancelled</span>';
+  return `
+  <div class="ticket status-${o.status}" data-id="${o.id}">
+    ${tierIcon(o.status, 46)}
+    <div class="ticket-main">
+      <div class="ticket-title">${escapeHtml(o.customer_name)} ${tag}</div>
+      <div class="ticket-meta">${escapeHtml(itemLabel)} · ${o.weight_kg}kg — ${o.status==='delivered'?'delivered':'cancelled'} ${formatDate(archiveDateStr(o))}</div>
+      <div class="ticket-shop">${escapeHtml(shopName(o.shop_id))} <span class="mono" style="text-transform:none;color:var(--ink-soft);">· #${o.id.slice(0,8)}</span></div>
+    </div>
+    <div class="ticket-right"><div><div class="ticket-amount">₹${amt}</div></div></div>
+  </div>`;
 }
 
 /* ============================================================================
@@ -1363,14 +1483,18 @@ function sendWhatsAppReceipt(order){
 
 function canEditDetails(order){
   const role = App.profile.role;
-  if(role === 'owner' || role === 'manager') return true;
+  if(role === 'owner') return true;
+  if(isArchived(order)) return false; // locked to everyone but the Owner once archived
+  if(role === 'manager') return true;
   if(role === 'shop_staff') return order.shop_id === App.profile.shop_id && ['new','confirmed'].includes(order.status);
   return false;
 }
 function canChangeStatusTo(order, newStatus){
   const role = App.profile.role;
+  if(role === 'owner') return true; // unrestricted, any status, any time — including restoring an archived order
+  if(isArchived(order)) return false; // locked to everyone but the Owner once archived
   if(newStatus === 'baking' && order.approval_status === 'pending') return false;
-  if(role === 'owner' || role === 'manager') return true;
+  if(role === 'manager') return true;
   if(role === 'baker') return !['delivered','cancelled'].includes(newStatus);
   if(role === 'shop_staff'){
     if(order.shop_id !== App.profile.shop_id) return false;
@@ -1385,6 +1509,8 @@ function canApprove(){ return ['owner','manager'].includes(App.profile.role); }
 function drawOrderModal(order, history, photoUrls){
   const backdrop = document.getElementById('modal-backdrop');
   const editable = canEditDetails(order);
+  const archived = isArchived(order);
+  const isOwner = App.profile.role === 'owner';
   backdrop.innerHTML = `
   <div class="modal">
     <div class="modal-head">
@@ -1403,14 +1529,28 @@ function drawOrderModal(order, history, photoUrls){
         ${order.approval_status==='pending' && canApprove() ? `<span style="display:flex;gap:.5rem;"><button class="btn btn-sm btn-primary" id="m-approve">Approve</button><button class="btn btn-sm btn-danger" id="m-reject">Reject</button></span>` : ''}
       </div>` : ''}
 
-    <div class="status-track">
-      ${STATUS_FLOW.map(s=>{
-        const clickable = canChangeStatusTo(order, s) && s !== order.status;
-        return `<button class="status-pill ${order.status===s?'current':''} ${clickable?'clickable':''}" ${clickable?`data-status="${s}"`:'disabled'} title="${(s==='baking'&&order.approval_status==='pending')?'Needs approval first':''}">${STATUS_LABEL[s]}</button>`;
-      }).join('')}
-      ${canChangeStatusTo(order,'cancelled') && order.status!=='cancelled' ? `<button class="status-pill clickable" data-status="cancelled">Cancel</button>` : ''}
-      ${order.status==='cancelled' ? `<span class="status-pill current" style="background:var(--accent-red);border-color:var(--accent-red);">Cancelled</span>` : ''}
-    </div>
+    ${archived ? `
+      <div class="lock-note">
+        <span>🗄 Archived — ${STATUS_LABEL[order.status]} on ${formatDate(archiveDateStr(order))}.
+          ${isOwner ? 'As Owner, you can restore it to any status below.' : 'Only the Owner can edit, restore, or delete it.'}</span>
+      </div>
+      ${isOwner ? `
+        <div class="status-track">
+          <select class="status-picker" id="m-restore-picker">
+            ${[...STATUS_FLOW,'cancelled'].map(s=>`<option value="${s}" ${s===order.status?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary btn-sm" id="m-restore">↩ Restore to this status</button>
+        </div>` : ''}
+    ` : `
+      <div class="status-track">
+        ${STATUS_FLOW.map(s=>{
+          const clickable = canChangeStatusTo(order, s) && s !== order.status;
+          return `<button class="status-pill ${order.status===s?'current':''} ${clickable?'clickable':''}" ${clickable?`data-status="${s}"`:'disabled'} title="${(s==='baking'&&order.approval_status==='pending')?'Needs approval first':''}">${STATUS_LABEL[s]}</button>`;
+        }).join('')}
+        ${canChangeStatusTo(order,'cancelled') && order.status!=='cancelled' ? `<button class="status-pill clickable" data-status="cancelled">Cancel</button>` : ''}
+        ${order.status==='cancelled' ? `<span class="status-pill current" style="background:var(--accent-red);border-color:var(--accent-red);">Cancelled</span>` : ''}
+      </div>
+    `}
 
     <div class="tabs">
       <button class="tab ${modalTab==='details'?'active':''}" data-tab="details">Details</button>
@@ -1444,6 +1584,14 @@ function drawOrderModal(order, history, photoUrls){
       toast(`Order moved to ${STATUS_LABEL[newStatus]}`); closeModal(); await loadOrders(); renderView();
     };
   });
+  const restoreBtn = document.getElementById('m-restore');
+  if(restoreBtn) restoreBtn.onclick = async ()=>{
+    const newStatus = document.getElementById('m-restore-picker').value;
+    const { error } = await App.sb.from('orders').update({status:newStatus}).eq('id', order.id);
+    if(error){ toast(error.message, true); return; }
+    pushAction({label:`Restored to ${STATUS_LABEL[newStatus]} (${order.customer_name})`, table:'orders', id:order.id, before:{status:order.status}, after:{status:newStatus}});
+    toast(`Order restored to ${STATUS_LABEL[newStatus]}`); closeModal(); await loadOrders(); renderView();
+  };
   const appr = document.getElementById('m-approve');
   if(appr) appr.onclick = async ()=>{
     const { error } = await App.sb.from('orders').update({approval_status:'approved'}).eq('id', order.id);
@@ -1489,7 +1637,7 @@ function drawModalTabBody(order, history, editable, photoUrls){
       : `<div class="history-meta" style="padding:1rem 0;">No history yet.</div>`;
     return;
   }
-  const locked = App.profile.role === 'shop_staff' && !editable;
+  const locked = App.profile.role === 'shop_staff' && !editable && !isArchived(order);
   const isCustom = order.order_kind === 'custom';
   const photoSection = photoUrls.length ? `
     <div class="field">
@@ -1520,7 +1668,7 @@ function drawModalTabBody(order, history, editable, photoUrls){
     `}
     <div class="field"><label>Message on cake / occasion</label><input type="text" id="of-message" value="${escapeAttr(order.message_on_cake)}" ${!editable?'disabled':''}></div>
     <div class="field-row">
-      <div class="field"><label>Delivery date</label><input type="date" id="of-date" value="${order.delivery_date}" ${!editable?'disabled':''}></div>
+      <div class="field"><label>Delivery date</label><input type="date" id="of-date" value="${order.delivery_date}" ${!editable?'disabled':''} ${App.profile.role==='shop_staff'?`min="${todayStr()}"`:''}></div>
       <div class="field"><label>Delivery time</label><input type="time" id="of-time" value="${order.delivery_time||''}" ${!editable?'disabled':''}></div>
     </div>
     <div class="field-row">
@@ -1618,7 +1766,8 @@ function renderNewOrderView(){
       </div>
       <div class="field"><label>Message on cake / occasion</label><input type="text" id="n-message" placeholder="Happy Birthday, Aanya!"></div>
       <div class="field-row">
-        <div class="field"><label>Delivery date *</label><input type="date" id="n-date"></div>
+        <div class="field"><label>Delivery date *</label><input type="date" id="n-date" ${App.profile.role==='shop_staff'?`min="${todayStr()}"`:''}>
+          ${App.profile.role==='shop_staff'?`<div class="field-hint">Can't be backdated — earliest is today.</div>`:''}</div>
         <div class="field"><label>Delivery time</label><input type="time" id="n-time"></div>
       </div>
       <div class="billing-block">
@@ -1827,9 +1976,10 @@ function offerReceiptAfterCreate(order){
 ============================================================================ */
 function renderFactoryView(){
   const content = document.getElementById('content');
-  const active = App.orders.filter(o=>o.status!=='cancelled');
+  const active = App.orders.filter(o=>o.status!=='cancelled' && !isArchived(o));
   content.innerHTML = `
     <div class="content-head"><div><h2>Factory board</h2><div class="sub">Production pipeline across all shops — check reference photos before starting any <span class="tag tag-custom">Custom</span> ticket</div></div></div>
+    <div class="note mint">The Delivered column only shows today's completions — once the day ends, they move to <b>Past Orders</b> automatically.</div>
     <div class="board">
       ${STATUS_FLOW.map(status=>{
         const items = active.filter(o=>o.status===status).sort((a,b)=>a.delivery_date.localeCompare(b.delivery_date));
@@ -2301,6 +2451,7 @@ const iconUsers = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const iconShop = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 9l1-5h16l1 5M4 9v10h16V9M4 9a2 2 0 0 0 4 0 2 2 0 0 0 4 0 2 2 0 0 0 4 0 2 2 0 0 0 4 0"/></svg>`;
 const iconBook = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2V5Z"/><path d="M6 19a2 2 0 0 1 0-4h12"/></svg>`;
 const iconGear = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>`;
+const iconArchive = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2H3V7Z"/><path d="M4 9v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/></svg>`;
 const iconWhatsapp = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2c-5.5 0-9.96 4.46-9.96 9.96 0 1.76.46 3.42 1.26 4.86L2 22l5.32-1.28a9.9 9.9 0 0 0 4.72 1.2h.01c5.5 0 9.96-4.46 9.96-9.96S17.54 2 12.04 2Zm5.82 14.24c-.24.68-1.4 1.3-1.94 1.36-.5.06-1.12.08-1.8-.12-.42-.12-.96-.3-1.66-.6-2.92-1.26-4.82-4.2-4.96-4.4-.14-.2-1.18-1.58-1.18-3s.74-2.12 1-2.42c.26-.28.56-.36.76-.36.2 0 .4 0 .56.01.18.02.42-.07.66.5.24.58.82 2 .9 2.14.08.14.13.31.02.51-.1.2-.15.32-.3.5-.15.18-.3.4-.44.54-.14.14-.3.3-.13.6.18.3.8 1.32 1.72 2.14 1.18 1.05 2.18 1.38 2.48 1.53.3.15.48.13.66-.08.18-.2.76-.88.96-1.18.2-.3.4-.25.66-.15.28.1 1.76.83 2.06.98.3.15.5.22.58.35.08.13.08.75-.16 1.43Z"/></svg>`;
 
 /* ============================================================================
