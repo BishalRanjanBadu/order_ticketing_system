@@ -1,230 +1,203 @@
-# Cakes & Bakes — Ticket Rail
+<div align="center">
 
-Order intake for two retail shops, syncing into one factory production
-dashboard — with a live catalog, a separate custom-cake flow, Google-only
-sign-in, owner-level user management, role-locked views, an audit trail,
-session undo/redo, and Excel/CSV exports. Single HTML file, mobile-friendly,
-backed by your own free Supabase project.
+# 🍰 Ticket Rail
+### Order & Production Management System for Multi-Location Bakeries
 
-## 1. Create your Supabase project (free tier)
+**A full-stack operations platform built to replace pen-and-paper order
+tickets** — order intake, role-based production tracking, billing, and
+real-time notifications for a two-shop bakery feeding one central factory.
 
-1. Go to [supabase.com](https://supabase.com) → **New project**.
-2. Pick any name/region and a database password (save it somewhere safe).
-3. Wait ~2 minutes for it to spin up.
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://bishalranjanbadu.github.io/order_ticketing_system/)
+[![Postgres](https://img.shields.io/badge/PostgreSQL-Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com)
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)](#tech-stack)
+[![PWA](https://img.shields.io/badge/Push-Web%20Push%20API-FF6B6B?style=for-the-badge)](#tech-stack)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](#license)
 
-## 2. Run the database schema
+[Live Demo](https://bishalranjanbadu.github.io/order_ticketing_system/) ·
+[Features](#key-features) ·
+[Architecture](#architecture--engineering-decisions) ·
+[Tech Stack](#tech-stack) ·
+[Setup](#getting-started)
 
-1. In your Supabase project, open **SQL Editor → New query**.
-2. Paste the entire contents of `schema.sql` and click **Run**.
-3. This creates every table, role, catalog structure, the private photo
-   storage bucket, row-level security policies, and audit-trail triggers —
-   plus two demo shops and a starter 6-category catalog with example prices.
-   Rename/edit all of it later from the app. Safe to re-run if you ever pull
-   an updated `schema.sql`.
+</div>
 
-## 3. Turn on Google Sign-In
+---
 
-This app uses **Google (Gmail) OAuth as the only login method**.
+## Overview
 
-1. In **Google Cloud Console** ([console.cloud.google.com](https://console.cloud.google.com)):
-   - Create a project (or use an existing one).
-   - Go to **APIs & Services → OAuth consent screen** and set it up.
-   - Go to **APIs & Services → Credentials → Create Credentials → OAuth
-     client ID**, type **Web application**.
-   - Under **Authorized redirect URIs**, add the callback URL Supabase shows
-     you in the next step (looks like
-     `https://<your-project-ref>.supabase.co/auth/v1/callback`).
-   - Save, then copy the **Client ID** and **Client Secret**.
-2. In your **Supabase project**: **Authentication → Providers → Google** →
-   toggle it on, paste the Client ID and Client Secret, save.
-3. In **Authentication → URL Configuration**, set the **Site URL** (and add
-   under **Redirect URLs**) to wherever you're hosting `index.html`.
+Ticket Rail is a single-page operations platform that runs a real
+multi-location bakery business end to end: two retail shops take orders,
+one factory produces them, and every role — Owner, Manager, Shop Staff,
+Baker — gets exactly the view and permissions their job needs, enforced
+not just in the UI but at the database layer.
 
-**⚠️ Publish the consent screen — this is the #1 cause of "my staff can't
-sign in even after I approved them."** While your OAuth consent screen is in
-**Testing** mode, Google silently blocks any Gmail account that hasn't been
-added as a test user — it never even reaches this app or Supabase, so
-approving them here won't help. Fix it one of two ways:
-- **Testing mode**: add every teammate's Gmail under **OAuth consent screen
-  → Test users**, or
-- **Production mode**: click **Publish App** on the consent screen (no
-  Google review needed for the basic scopes this app uses).
+It started as a request to digitize a paper order rail. It grew into a
+system with role-based production tracking, a live catalog, custom-order
+approvals, billing, a permanent audit trail, real-time sync across every
+open session, and genuine OS-level push notifications — all running on a
+**single static HTML file** with zero build tooling, deployable to any
+static host.
 
-## 4. Open the app
+## Screenshots
 
-1. Open `index.html` — double-click it, or host it anywhere static (GitHub
-   Pages, Netlify, Vercel). No build step needed.
-   **If you want push notifications, `sw.js` must be uploaded to the same
-   folder as `index.html`** (same level, not a subfolder) — see
-   `PUSH_NOTIFICATIONS_SETUP.md` for the rest of that setup.
-2. The app ships with your Supabase Project URL + anon key already wired in
-   (see `index.html` → `getConfig()`), so teammates can open the link and go
-   straight to **Sign in with Google** — nobody has to paste API keys. If you
-   ever move to a different Supabase project, update the `url`/`key` values
-   in that function (or use the manual config screen for local testing —
-   it still works and takes priority if you save keys there).
-3. Click **Sign in with Google**. **The very first person to ever sign in
-   becomes the Owner automatically and is instantly active.** Everyone who
-   signs in after that lands on a **"waiting for approval"** screen (which
-   auto-refreshes) — the Owner activates them and assigns their real role +
-   shop from **Manage Team**.
+> _Add screenshots of the Orders rail, Factory Board, and mobile view here
+> — e.g. `docs/screenshot-orders.png`, `docs/screenshot-factory.png`._
 
-## 5. Set up your shops, catalog, and team
+```
+docs/
+├── screenshot-orders.png
+├── screenshot-factory-board.png
+├── screenshot-past-orders.png
+└── screenshot-mobile.png
+```
 
-1. Go to **Shops** and rename/add your two retail locations.
-2. Go to **Catalog** and edit the starter categories/items to match your real
-   price sheet — every item stores its full-kg and half-kg price explicitly.
-3. Have your Manager, Shop Staff, and Baker teammates sign in with their
-   Gmail accounts, then activate each one from **Manage Team**.
-4. Optionally adjust the custom-order approval threshold in **Settings**.
+## Key Features
 
-## Roles, at a glance
+### Order Lifecycle & Production
+- Full order pipeline — **New → Confirmed → Baking → Ready → Delivered**
+  — visualized as a kanban-style **Factory Board**, color-coded by stage
+- **Catalog module**: categories → items → explicit per-kg/half-kg
+  pricing, editable without touching code
+- **Custom cake orders** as a distinct flow — multi-photo upload
+  (client-side compressed before storage), design notes, and an
+  Owner/Manager approval gate that auto-triggers above a configurable
+  price threshold
+- **Past Orders archive**: Delivered/Cancelled orders roll off the active
+  board automatically at the end of the day they're completed — no
+  scheduled job, computed live — keeping day-to-day views uncluttered
+  while nothing is ever lost (see [Architecture](#architecture--engineering-decisions))
 
-| Role | Sees | Can do |
-|---|---|---|
-| **Owner** | Everything | Full access everywhere: orders, factory board, analytics, exports, catalog, team management, shops (including delete), settings, undo/redo, delete orders |
-| **Manager** | Everything except Team/Settings/Export/Shops | Same as Owner for day-to-day order work, but cannot delete orders, manage team accounts, reach Settings, run exports, or manage shops — those four are Owner-only |
-| **Shop Staff** | **Orders + New Order only** | Create/edit orders for their own shop; locked out of editing cake specs once status reaches "Baking"; can **Cancel** an order or mark it **Delivered** once it's Ready — but cannot Confirm a new order or touch Baking/Ready themselves (that's Baker/Manager/Owner's job) |
-| **Baker / Factory** | **Factory Board only** | Sees every order from both shops; can only change status, through New → Confirmed → Baking → Ready — **cannot Cancel an order** and **cannot mark it Delivered** (both are shop/management decisions, not production ones) |
+### Role-Based Access Control
+Four roles — **Owner, Manager, Shop Staff, Baker** — each see a different
+app, not just a different theme:
 
-Every one of these rules is enforced **in the database** (Postgres Row Level
-Security + triggers in `schema.sql`), not just hidden in the UI — a locked-
-down role can't work around it by calling the API directly.
+| | Owner | Manager | Shop Staff | Baker |
+|---|:---:|:---:|:---:|:---:|
+| View & manage all orders | ✅ | ✅ | own shop | Factory Board only |
+| Confirm / advance production | ✅ | ✅ | — | ✅ |
+| Cancel an order | ✅ | ✅ | ✅ | — |
+| Approve custom orders | ✅ | ✅ | — | — |
+| Edit/restore an archived order | ✅ | view-only | view-only | — |
+| Manage team, shops, settings | ✅ | — | — | — |
 
-## What's new in this pass
+Every rule above is enforced with **Postgres Row Level Security and
+database triggers** — not application-layer checks alone — so permissions
+hold even against a direct API call.
 
-- **Real push notifications** — the in-app bell above now has a companion
-  delivery channel: a genuine OS-level notification (lock screen,
-  notification tray) even when the app is closed, via Web Push. This needs
-  a one-time deployment step on your end — see
-  **`PUSH_NOTIFICATIONS_SETUP.md`**, not optional, the notifications won't
-  arrive until that's done. Two toggles control it: each person can turn
-  push on/off for their own device (in the notification panel), and the
-  Owner has a separate organization-wide kill switch in **Settings**. See
-  **`PUSH_NOTIFICATION_DECISION.md`** for the reasoning behind the approach
-  and its platform limitations (notably iPhone/Safari).
-- **Tighter status permissions** — Bakers can no longer cancel an order
-  (only Manager, Shop Staff, or Owner can); Shop Staff can no longer move an
-  order from New to Confirmed (only Baker, Manager, or Owner can) — Shop
-  Staff still handles Cancel and the final Delivered handoff.
-- **Export and Shops are now Owner-only** — Manager lost access to both.
-- **Notification framework** — a bell icon (top bar on mobile, sidebar on
-  desktop) with an unread badge, driven entirely by database triggers so
-  each role only sees what's actually theirs to act on:
+### Real-Time & Notifications
+- **Live sync across every open session** via Postgres logical
+  replication (Supabase Realtime) — no polling, no manual refresh
+- **In-app notification center** — swipe-to-dismiss, per-role targeting
+  generated entirely by database triggers
+- **Genuine push notifications** — lock-screen/OS-tray delivery via the
+  Web Push API, a Service Worker, and a Supabase Edge Function, triggered
+  automatically the instant a database event fires
+- Two-tier control: a personal per-device mute, plus an Owner-level
+  global kill switch
 
-  | Role | Gets notified when |
-  |---|---|
-  | **Owner** | a custom order needs approval; a new teammate signs in and needs activating; a rush order is flagged; an order becomes Ready |
-  | **Manager** | a custom order needs approval; a rush order is flagged; an order becomes Ready |
-  | **Shop Staff** (their own shop only) | one of their orders is marked Ready (time to arrange pickup/delivery); their custom order is approved or rejected |
-  | **Baker** | an order is Confirmed (ready to enter the production queue); a rush order is flagged |
+### Business Operations
+- **Billing**: advance payments, auto-computed balance due, a delivery-time
+  confirmation modal so nothing is handed over unbilled
+- **WhatsApp receipts**: one tap opens a pre-filled customer message
+- **Analytics**: revenue, order volume, and breakdowns by shop/status/weekday
+- **Export**: CSV/Excel with quarter/month/year presets
+- **Permanent audit trail** on every order, plus a session-scoped
+  **undo/redo** for fast recovery from a wrong click
+- **Google OAuth-only sign-in** with an Owner-gated approval queue for
+  new accounts
 
-  Clicking a notification jumps straight to that order. "Mark all read"
-  clears the badge. See the limitations below for how read-tracking and
-  polling work under the hood. Full reasoning for who gets what is in
-  **`NOTIFICATION_FRAMEWORK.md`**.
+## Architecture & Engineering Decisions
 
-- **Logo, properly rendered** — the source photo had the outer edges of the
-  first and last letters clipped at the frame boundary; it's been rebuilt
-  from the original pixels (not a font substitute) so "CAKES & BAKES" reads
-  complete, and re-embedded throughout the app.
-- **Factory board color coding** — each column now has its own tinted
-  background wash, a colored top bar, and matching header text/count per
-  production stage, not just a thin strip on each card.
-- **Delete option for team accounts** (Owner-only, in Manage Team) —
-  alongside the existing Suspend/Remove. This is a genuine hard delete, with
-  tradeoffs spelled out below.
-- **Delete option for catalog items** (Owner/Manager, in Catalog) — safe to
-  use even on items with order history, since every order keeps its own
-  snapshot of the item name/price at the time it was placed.
-- **Billing: advance / balance / due-on-delivery** — every order now has an
-  "Advance received" field with a live-computed balance. Tickets and factory
-  board cards show a "₹X due" tag whenever a balance remains. Marking an
-  order **Delivered** now opens a small billing-confirmation dialog (total /
-  paid / balance, with an editable "amount collected now") instead of just
-  flipping the status. Analytics gained a **Pending balance** stat, and
-  exports gained **Advance Received** / **Balance Due** columns.
-- **WhatsApp receipt** — a **Send receipt** button on any order (with a
-  phone number) opens WhatsApp with the order details, delivery date, and
-  billing summary pre-filled as a message — one tap to send, no cost, no
-  setup. You're also asked right after creating an order with a phone number
-  attached. See the limitations below for why this is "click to send"
-  rather than fully automatic.
-- **Redesigned background** — a subtle kraft-paper grain texture, bolder
-  coral/lavender/butter ambient color pulled from your visiting card, and
-  hand-drawn pastry doodles now appear across the sign-in screen, the
-  sidebar, and empty states — not just as a one-off accent.
+A few decisions worth calling out, since they're the parts that matter
+more than the feature list:
 
-### From the previous pass (still in place)
+**Security lives in the database, not just the UI.**
+Every permission — who can edit what, when an order locks, who can
+approve a custom order — is enforced with Postgres Row Level Security
+policies and `BEFORE UPDATE` triggers. The frontend hides buttons a role
+can't use, but the actual enforcement doesn't trust the frontend at all.
 
-- Search no longer loses focus while typing (only the ticket rail re-renders
-  on each keystroke).
-- Photos on every order, not just custom ones, with local download buttons
-  (including "download all" for multi-photo orders).
-- Session Undo / Redo / Clear, Owner-only, in **Settings**.
-- Locked-down role views: Shop Staff sees Orders + New Order only and can
-  hand off to Delivered but not touch Baking/Ready; Baker sees the Factory
-  Board only and can run production but not mark Delivered.
-- Owner can delete shops (blocked automatically if the shop still has orders
-  — deactivate instead), and a shop's name frees up for reuse the moment
-  it's deactivated or deleted.
-- Proper mobile layout: a top app bar with a hamburger menu opens a slide-in
-  nav drawer; the order modal goes full-screen; tables scroll horizontally;
-  forms and filters stack to a single column.
+**No cron jobs, ever — state is computed, not scheduled.**
+The Past Orders archive is the clearest example: rather than running a
+scheduled job to "move" orders at midnight (a real failure mode — a
+missed run leaves something silently stuck), whether an order counts as
+"archived" is a live comparison between a stored timestamp and the
+viewer's current date, recalculated on every render. There is nothing
+that can fail to run.
 
-## A few honest limitations, worth knowing
+**Push notifications, built on primitives, not a third-party SDK.**
+The push pipeline is a Service Worker plus a Deno-based Supabase Edge
+Function signing VAPID payloads directly against the Web Push protocol —
+triggered by a Postgres database webhook the instant a notification row
+is written. No push-as-a-service vendor, no polling.
 
-- **Notifications are in-app only, on a 30-second poll** — no push
-  notifications, no sound, no email/SMS, and nothing arrives if the app tab
-  isn't open. There's also no per-notification read flag — instead, each
-  person has one "notifications seen up to" timestamp, and "Mark all read"
-  just moves it forward, so partial/individual read-state isn't tracked
-  (this keeps a broadcast to an entire role from needing a separate
-  read-tracking row per person). A true push/real-time version would use
-  Supabase's Realtime feature or a mobile push provider — both are
-  reasonable v-next upgrades once the basics are proven out.
+**Single-file frontend, by design.**
+No bundler, no framework, no `node_modules`. The entire client is one
+HTML file with inline CSS/JS, using the Supabase JS client via CDN. It
+deploys by uploading a file — to GitHub Pages, Netlify, or any static
+host — and there is no build step to get wrong.
 
-- **Deleting a team account is permanent and only removes their *app*
-  profile** — their Google/Supabase Auth account itself isn't touched (that
-  needs the Supabase dashboard). Their old orders stay on file but show as
-  created by a deleted account instead of their name. If they sign in again
-  later, the app detects the missing profile and quietly recreates a fresh
-  **pending** account for them (safe defaults only — they can't grant
-  themselves a role), so they're not permanently locked out, just back to
-  square one for approval. If you just want to revoke someone's access
-  without losing their name on history, use **Remove** instead — that's
-  reversible and keeps attribution intact.
-- **The WhatsApp receipt is "click to send," not automatic.** Supabase's
-  free tier has no way to send SMS/WhatsApp messages on its own — that needs
-  a paid provider (Twilio, or India-friendly options like MSG91/Gupshup)
-  plus a small server-side function, since a provider API key can't safely
-  live in browser code. The current version opens a pre-filled WhatsApp chat
-  and a staff member taps Send — free, instant, zero setup. If you want it
-  to fire automatically with no human in the loop, that's a v-next feature
-  once you've picked and funded a provider.
-- **Undo/redo is session-only and covers the highest-value actions** (order
-  status/edits/approvals, catalog prices) — it doesn't cover every possible
-  action (e.g. team role changes), and it resets when you reload the page.
-  The permanent, complete record of every change is still the per-order
-  **History** tab, which never resets.
-- **"Instant" session invalidation** for suspended/removed accounts: Row
-  Level Security blocks all their data access immediately, and the app
-  force-signs them out within ~45 seconds — but true instant JWT revocation
-  would need a service-role key, which can't safely live in a browser-only
-  app.
-- **Photo storage access** is authenticated-user-level, not shop-scoped —
-  any active team member can view any order's reference photos.
+**A custom visual design system, not a component library.**
+The interface (a "kraft paper and ticket rail" theme, down to a
+hand-drawn cake-tier progress indicator used as the core status
+visualization) was built from the bakery's own branding, in hand-written
+CSS with no UI framework dependency.
 
-## Still deliberately deferred
+## Tech Stack
 
-- **Offline sync** at shop locations
-- **Fully automatic WhatsApp/SMS sending** (needs a paid provider — see above)
-- **Scheduled auto-export** (e.g. auto-email every Monday)
-- Baker time-slot / overbooking prevention logic
+| Layer | Technology |
+|---|---|
+| **Frontend** | Vanilla JavaScript (ES6+), HTML5, CSS3 — no framework, no build step |
+| **Backend / Database** | [Supabase](https://supabase.com) — PostgreSQL, Row Level Security, Realtime, Storage |
+| **Auth** | Google OAuth 2.0 via Supabase Auth |
+| **Serverless Functions** | Supabase Edge Functions (Deno) |
+| **Push Notifications** | Web Push API, VAPID, Service Workers |
+| **Hosting** | Static hosting (GitHub Pages) |
 
-## Notes on the free tier
+## Project Structure
 
-Supabase's free tier includes the Postgres database, Auth, and 1GB of
-Storage used here at no cost. If your project is inactive for a week it
-pauses automatically — just open it in the Supabase dashboard to un-pause;
-no data is lost.
+```
+.
+├── index.html                          # entire frontend — single file, no build step
+├── sw.js                               # service worker (push notification delivery)
+├── schema.sql                          # full database schema: tables, RLS, triggers
+└── supabase/
+    └── functions/
+        └── send-push/
+            └── index.ts                # Edge Function: sends Web Push on new notifications
+```
+
+## Getting Started
+
+This app runs against your own free [Supabase](https://supabase.com)
+project — no server to manage.
+
+1. **Create a Supabase project**, then run `schema.sql` in the SQL Editor.
+2. **Enable Google as an Auth provider** in Supabase and configure the
+   OAuth consent screen in Google Cloud Console.
+3. **Open `index.html`** — the Supabase connection is configured inline;
+   host it anywhere static (GitHub Pages, Netlify, or locally).
+4. *(Optional)* **Enable push notifications** by deploying the Edge
+   Function and connecting the database webhook — see the setup notes in
+   the repo for the full walkthrough.
+
+The first Google account to sign in becomes the Owner automatically;
+every account after that waits in an approval queue.
+
+## Roadmap
+
+- Offline-first support at shop locations via a local cache layer
+- Scheduled/automated report delivery (e.g. a weekly email digest)
+- Baker time-slot management to prevent production overbooking
+
+## License
+
+MIT — free to use, adapt, and learn from.
+
+---
+
+<div align="center">
+
+Built to run a real two-location bakery's daily order flow, end to end.
+
+</div>
