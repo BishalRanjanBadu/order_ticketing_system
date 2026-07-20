@@ -178,7 +178,16 @@ create table if not exists public.orders (
 
   created_by uuid references public.profiles(id) on delete set null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+
+  -- Past Orders framework: set automatically the moment status first enters
+  -- that state (see enforce_order_edit_rules below). Whether an order is
+  -- "still in today's grace period" or "fully archived" is never stored as
+  -- a flag — it's computed live by the app comparing this timestamp's
+  -- calendar date to today's, every time a screen renders. See
+  -- PAST_ORDERS_SETUP.md for the full reasoning.
+  delivered_at timestamptz,
+  cancelled_at timestamptz
 );
 
 -- Add columns if upgrading an existing v1 database
@@ -192,6 +201,13 @@ alter table public.orders add column if not exists approval_status text not null
 alter table public.orders add column if not exists approved_by uuid references public.profiles(id);
 alter table public.orders add column if not exists approved_at timestamptz;
 alter table public.orders add column if not exists advance_amount numeric(10,2) not null default 0;
+alter table public.orders add column if not exists delivered_at timestamptz;
+alter table public.orders add column if not exists cancelled_at timestamptz;
+-- backfill for any orders that were already delivered/cancelled before this
+-- upgrade, so they don't all show up as "delivered today" — best guess is
+-- their last-updated time, which for these rows is when that status was set
+update public.orders set delivered_at = updated_at where status = 'delivered' and delivered_at is null;
+update public.orders set cancelled_at = updated_at where status = 'cancelled' and cancelled_at is null;
 do $$ begin
   alter table public.orders add constraint orders_kind_check check (order_kind in ('catalog','custom'));
 exception when duplicate_object then null; end $$;
@@ -270,6 +286,10 @@ returns trigger
 language plpgsql security definer set search_path = public
 as $$
 begin
+  if public.my_role() = 'shop_staff' and new.delivery_date < current_date then
+    raise exception 'Delivery date cannot be in the past';
+  end if;
+
   if new.order_kind = 'custom' then
     if new.amount >= public.approval_threshold() then
       new.approval_status := 'pending';
@@ -290,16 +310,23 @@ create trigger trg_set_custom_approval
 
 -- ----------------------------------------------------------------------------
 -- TRIGGER: enforce who may change what on an order
---   owner / manager : can change anything, any time, including approvals
+--   owner           : can change anything, any time, including approvals,
+--                      and is the ONLY role that can touch an order once
+--                      it's archived (delivered or cancelled) — edit it,
+--                      restore it to any status, or delete it
+--   manager         : same day-to-day rights as owner, EXCEPT once an order
+--                      is delivered/cancelled it's locked to them too —
+--                      only the Owner can un-archive or edit it from there
 --   baker           : can ONLY change status, and only through the production
 --                      stages (new→confirmed→baking→ready) — NOT the final
---                      "delivered" step, which belongs to the shop
+--                      "delivered" step (that's the shop's call) and NOT
+--                      "cancelled" (that's a shop/management decision)
 --   shop_staff      : can edit their own shop's orders, but only while
 --                      status is 'new' or 'confirmed' (locked once baking
---                      starts); may set status to new/confirmed/cancelled/
---                      delivered — i.e. intake and hand-off, not the factory's
---                      internal baking/ready stages; may always raise the
---                      priority flag
+--                      starts); may set status to cancelled/delivered —
+--                      i.e. intake and hand-off, not the factory's internal
+--                      baking/ready stages; may always raise the priority
+--                      flag; may NEVER set a delivery date in the past
 --   EVERYONE: a custom order stuck at approval_status='pending' cannot be
 --             moved into 'baking' until Owner/Manager approves it.
 -- ----------------------------------------------------------------------------
@@ -347,8 +374,19 @@ begin
     raise exception 'Only Owner/Manager can approve or reject a custom order';
   end if;
 
-  if role in ('owner','manager') then
-    null; -- unrestricted
+  -- Shop Staff can never schedule (or edit into) a delivery date in the past
+  if role = 'shop_staff' and new.delivery_date < current_date and new.delivery_date is distinct from old.delivery_date then
+    raise exception 'Delivery date cannot be in the past';
+  end if;
+
+  if role = 'owner' then
+    null; -- fully unrestricted, always — including archived orders
+  elsif old.status in ('delivered','cancelled') then
+    -- the order was ALREADY archived before this update — nobody but the
+    -- Owner (handled above) may touch it further, full stop
+    raise exception 'This order is archived — only the Owner can edit, restore, or delete it';
+  elsif role = 'manager' then
+    null; -- unrestricted for any order that isn't already archived
   elsif role = 'baker' then
     if non_status_changed then
       raise exception 'Bakers can only update order status, not order details';
@@ -379,6 +417,17 @@ begin
   if approval_changed and new.approval_status = 'approved' then
     new.approved_by := auth.uid();
     new.approved_at := now();
+  end if;
+
+  -- Past Orders framework: stamp the exact moment this order first enters
+  -- (or re-enters, after an Owner restore) an archived state — this is the
+  -- timestamp the app compares against "today" to decide grace-period vs
+  -- fully-archived. See PAST_ORDERS_SETUP.md.
+  if new.status = 'delivered' and old.status is distinct from 'delivered' then
+    new.delivered_at := now();
+  end if;
+  if new.status = 'cancelled' and old.status is distinct from 'cancelled' then
+    new.cancelled_at := now();
   end if;
 
   new.updated_at := now();
