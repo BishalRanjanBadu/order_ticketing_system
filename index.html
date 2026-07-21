@@ -385,6 +385,8 @@
   .tag-balance{background:#fde6d3;color:#9a5417;}
   .tag-archived-delivered{background:#e6e9e6;color:#5c665f;}
   .tag-archived-cancelled{background:#f4dcd8;color:#a13d31;}
+  .tag-archived-unmarked{background:#fde6d3;color:#9a5417;}
+  .grace-countdown{font-size:.68rem;color:var(--accent-coral);font-weight:700;}
   .billing-summary{background:var(--bg-panel-2);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;}
   .billing-row{display:flex;justify-content:space-between;padding:.35rem 0;font-size:.86rem;}
   .billing-row.total{border-top:1px dashed var(--line);margin-top:.3rem;padding-top:.6rem;font-weight:700;}
@@ -500,6 +502,7 @@ const App = {
   mobileNavOpen: false,
   notifications: [],
   notifTimer: null,
+  graceCheckTimer: null,
   notifPanelOpen: false,
   realtimeChannel: null,
   openOrderId: null,   // which order (if any) is currently shown in the detail modal
@@ -513,32 +516,58 @@ const PHOTO_BUCKET = 'cake-references';
 const MAX_PHOTOS = 5;
 
 /* ============================================================================
-   PAST ORDERS — grace period is a live computed comparison, never a stored
-   flag. See PAST_ORDERS_SETUP.md for the full reasoning: no cron job, no
-   background process — whether an order is "still today" or "archived" is
-   recalculated fresh every time a screen renders, using the viewer's local
-   calendar date.
+   PAST ORDERS — two different kinds of archiving, both computed live:
+
+   1. Delivered/Cancelled — archived once GRACE_MINUTES have passed since
+      delivered_at/cancelled_at. This is an ELAPSED-TIME comparison, so unlike
+      a calendar-date check it doesn't naturally stay current just from a page
+      reload — see startGraceCheckTimer() below for the small periodic
+      recheck that keeps the 10-minute boundary accurate while a screen is
+      open.
+   2. Unmarked — an order that's still New/Confirmed/Baking/Ready after its
+      own delivery_date has fully passed. This IS a pure calendar-date
+      comparison (no timer needed), same style as the original design.
+      Owner/Manager can remark it; Shop Staff/Baker cannot (see
+      canEditDetails/canChangeStatusTo).
+
+   Neither case involves a scheduled job — both are recalculated fresh, live,
+   every time this runs. The one exception in the whole system is the 10pm
+   Shop-Staff warning, which genuinely needs pg_cron since it's about the
+   clock, not a state change — see schema.sql for that one.
 ============================================================================ */
+const GRACE_MINUTES = 10;
 function localDateStr(d){
   const pad = n => String(n).padStart(2,'0');
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
 function todayStr(){ return localDateStr(new Date()); }
+/* Delivered/Cancelled, still within the 10-minute window — shows on the
+   active rail / factory board's Delivered column */
+function isPastGraceArchive(order){
+  if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
+  const ts = order.status==='delivered' ? order.delivered_at : order.cancelled_at;
+  if(!ts) return false;
+  return (Date.now() - new Date(ts).getTime()) >= GRACE_MINUTES*60000;
+}
+function minutesUntilArchive(order){
+  const ts = order.status==='delivered' ? order.delivered_at : order.cancelled_at;
+  if(!ts) return null;
+  const elapsed = (Date.now() - new Date(ts).getTime()) / 60000;
+  return Math.max(0, Math.ceil(GRACE_MINUTES - elapsed));
+}
+/* still active, but its own delivery date has fully passed unresolved */
+function isUnmarked(order){
+  return order.status !== 'delivered' && order.status !== 'cancelled' && !!order.delivery_date && order.delivery_date < todayStr();
+}
+/* true if it belongs in Past Orders, for either reason above */
+function isArchived(order){ return isPastGraceArchive(order) || isUnmarked(order); }
+/* the date Past Orders sorts/filters by: when it was actually archived for
+   Delivered/Cancelled, or its original delivery date for Unmarked */
 function archiveDateStr(order){
-  const ts = order.status==='delivered' ? order.delivered_at : order.status==='cancelled' ? order.cancelled_at : null;
-  return ts ? localDateStr(new Date(ts)) : null;
-}
-/* still shows on the active rail / factory board's Delivered column */
-function isInGrace(order){
-  if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
-  const d = archiveDateStr(order);
-  return d === todayStr();
-}
-/* fully moved to Past Orders, locked to everyone but the Owner */
-function isArchived(order){
-  if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
-  const d = archiveDateStr(order);
-  return !!d && d !== todayStr();
+  if(order.status==='delivered' && order.delivered_at) return localDateStr(new Date(order.delivered_at));
+  if(order.status==='cancelled' && order.cancelled_at) return localDateStr(new Date(order.cancelled_at));
+  if(isUnmarked(order)) return order.delivery_date;
+  return null;
 }
 
 /* ============================================================================
@@ -550,7 +579,7 @@ function boot(){
   App.sb = supabase.createClient(cfg.url, cfg.key);
   App.sb.auth.onAuthStateChange((event, session)=>{
     App.session = session;
-    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); stopNotifTimer(); stopRealtimeSync(); renderAuthScreen(); }
+    if(session){ afterLogin(); } else { App.profile = null; stopActivityTimer(); stopNotifTimer(); stopRealtimeSync(); stopGraceCheckTimer(); renderAuthScreen(); }
   });
   App.sb.auth.getSession().then(({data})=>{
     App.session = data.session;
@@ -664,6 +693,7 @@ async function afterLogin(){
   startActivityTimer();
   startNotifTimer();
   startRealtimeSync();
+  startGraceCheckTimer();
   registerServiceWorker().then(()=>{
     if(navigator.serviceWorker){
       navigator.serviceWorker.addEventListener('message', (event)=>{
@@ -725,6 +755,21 @@ function startNotifTimer(){
   App.notifTimer = setInterval(loadNotifications, 30000);
 }
 function stopNotifTimer(){ if(App.notifTimer){ clearInterval(App.notifTimer); App.notifTimer=null; } }
+
+/* the 10-minute grace window is an ELAPSED-TIME comparison, not a calendar
+   date — so unlike the rest of the archiving logic, it needs a small
+   recurring nudge to visibly update while someone's actually looking at a
+   screen, rather than only refreshing on the next data change. This does
+   NOT move any data — it only re-renders whatever's already loaded. */
+function startGraceCheckTimer(){
+  stopGraceCheckTimer();
+  App.graceCheckTimer = setInterval(()=>{
+    if(App.view === 'orders') updateOrdersResults();
+    else if(App.view === 'factory') renderFactoryView();
+    else if(App.view === 'past') updatePastResults();
+  }, 20000);
+}
+function stopGraceCheckTimer(){ if(App.graceCheckTimer){ clearInterval(App.graceCheckTimer); App.graceCheckTimer=null; } }
 
 /* ============================================================================
    REALTIME SYNC — the actual fix for "everyone has to refresh to see
@@ -1027,7 +1072,7 @@ function closeMobileNav(){ App.mobileNavOpen = false; const s=document.getElemen
 ============================================================================ */
 const NOTIF_ICON = {
   custom_approval_needed: '⏳', team_pending: '👤', order_received: '🆕', order_confirmed: '🧾',
-  order_ready: '📦', custom_approved: '✅', custom_rejected: '✕', priority_flagged: '⚑',
+  order_ready: '📦', custom_approved: '✅', custom_rejected: '✕', priority_flagged: '⚑', order_at_risk: '⏰',
 };
 function toggleNotifPanel(){
   App.notifPanelOpen = !App.notifPanelOpen;
@@ -1234,6 +1279,7 @@ function ticketHtml(o){
   const amt = Number(o.amount||0).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
   const balance = Math.max(0, Number(o.amount||0) - Number(o.advance_amount||0));
   const itemLabel = o.order_kind === 'custom' ? 'Custom cake' : (o.catalog_item_snapshot || o.cake_type || 'Cake');
+  const minsLeft = (o.status==='delivered' || o.status==='cancelled') ? minutesUntilArchive(o) : null;
   return `
   <div class="ticket status-${o.status} ${o.is_priority ? 'priority':''}" data-id="${o.id}">
     ${tierIcon(o.status, 46)}
@@ -1243,6 +1289,7 @@ function ticketHtml(o){
         ${o.order_kind==='custom' ? '<span class="tag tag-custom">Custom</span>' : ''}
         ${o.approval_status==='pending' ? '<span class="tag tag-approval">Needs approval</span>' : ''}
         ${balance>0 && o.status!=='cancelled' ? `<span class="tag tag-balance">₹${balance.toLocaleString()} due</span>` : ''}
+        ${minsLeft!=null ? `<span class="grace-countdown">archives in ${minsLeft}m</span>` : ''}
       </div>
       <div class="ticket-meta">${escapeHtml(itemLabel)} · ${o.weight_kg}kg — delivery ${formatDate(o.delivery_date)}${o.delivery_time ? ' at ' + formatTime(o.delivery_time) : ''}</div>
       <div class="ticket-shop">${escapeHtml(shopName(o.shop_id))} <span class="mono" style="text-transform:none;color:var(--ink-soft);">· #${o.id.slice(0,8)}</span></div>
@@ -1288,7 +1335,8 @@ function applyPastFilters(list){
   const f = App.pastFilters;
   return list.filter(o=>{
     if(f.shop && o.shop_id !== f.shop) return false;
-    if(f.status && o.status !== f.status) return false;
+    if(f.status === 'unmarked' && !isUnmarked(o)) return false;
+    if(f.status && f.status !== 'unmarked' && o.status !== f.status) return false;
     const archived = archiveDateStr(o);
     if(f.from && archived < f.from) return false;
     if(f.to && archived > f.to) return false;
@@ -1305,15 +1353,14 @@ function applyPastFilters(list){
 }
 function renderPastOrdersView(){
   const content = document.getElementById('content');
-  const readOnly = App.profile.role !== 'owner';
   const filtered = applyPastFilters(pastOrdersList()).slice().sort((a,b)=> archiveDateStr(b).localeCompare(archiveDateStr(a)));
   content.innerHTML = `
     <div class="content-head"><div><h2>Past Orders</h2><div class="sub" id="past-summary">${filtered.length} of ${pastOrdersList().length} archived order${pastOrdersList().length===1?'':'s'}</div></div></div>
-    ${readOnly ? `<div class="note">You can view past orders here. Editing, restoring, or deleting one is Owner-only.</div>` : ''}
+    <div class="note">Delivered/Cancelled: Owner-only to edit, restore, or delete. <b>Unmarked</b> (missed its delivery date unresolved): Owner or Manager can remark it — Shop Staff/Baker can view but not touch it.</div>
     <div class="filterbar">
       <div class="field grow-2"><label>Search</label><input type="text" id="pf-q" placeholder="Customer, phone, cake…" value="${escapeAttr(App.pastFilters.q)}"></div>
       <div class="field"><label>Shop</label><select id="pf-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}" ${App.pastFilters.shop===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
-      <div class="field"><label>Status</label><select id="pf-status"><option value="">Delivered + Cancelled</option><option value="delivered" ${App.pastFilters.status==='delivered'?'selected':''}>Delivered only</option><option value="cancelled" ${App.pastFilters.status==='cancelled'?'selected':''}>Cancelled only</option></select></div>
+      <div class="field"><label>Tag</label><select id="pf-status"><option value="">All</option><option value="delivered" ${App.pastFilters.status==='delivered'?'selected':''}>Delivered</option><option value="cancelled" ${App.pastFilters.status==='cancelled'?'selected':''}>Cancelled</option><option value="unmarked" ${App.pastFilters.status==='unmarked'?'selected':''}>Unmarked</option></select></div>
       <div class="field"><label>Archived from</label><input type="date" id="pf-from" value="${App.pastFilters.from}"></div>
       <div class="field"><label>Archived to</label><input type="date" id="pf-to" value="${App.pastFilters.to}"></div>
       <button class="btn btn-ghost" id="pf-clear">Clear</button>
@@ -1347,13 +1394,19 @@ function updatePastResults(){
 function pastTicketHtml(o){
   const amt = Number(o.amount||0).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
   const itemLabel = o.order_kind === 'custom' ? 'Custom cake' : (o.catalog_item_snapshot || o.cake_type || 'Cake');
-  const tag = o.status==='delivered' ? '<span class="tag tag-archived-delivered">Delivered</span>' : '<span class="tag tag-archived-cancelled">Cancelled</span>';
+  const unmarked = isUnmarked(o);
+  const tag = unmarked ? '<span class="tag tag-archived-unmarked">Unmarked</span>'
+            : o.status==='delivered' ? '<span class="tag tag-archived-delivered">Delivered</span>'
+            : '<span class="tag tag-archived-cancelled">Cancelled</span>';
+  const metaLine = unmarked
+    ? `${escapeHtml(itemLabel)} · ${o.weight_kg}kg — still ${STATUS_LABEL[o.status]}, was due ${formatDate(o.delivery_date)}`
+    : `${escapeHtml(itemLabel)} · ${o.weight_kg}kg — ${o.status==='delivered'?'delivered':'cancelled'} ${formatDate(archiveDateStr(o))}`;
   return `
-  <div class="ticket status-${o.status}" data-id="${o.id}">
-    ${tierIcon(o.status, 46)}
+  <div class="ticket status-${unmarked?'cancelled':o.status}" data-id="${o.id}">
+    ${tierIcon(unmarked?'cancelled':o.status, 46)}
     <div class="ticket-main">
       <div class="ticket-title">${escapeHtml(o.customer_name)} ${tag}</div>
-      <div class="ticket-meta">${escapeHtml(itemLabel)} · ${o.weight_kg}kg — ${o.status==='delivered'?'delivered':'cancelled'} ${formatDate(archiveDateStr(o))}</div>
+      <div class="ticket-meta">${metaLine}</div>
       <div class="ticket-shop">${escapeHtml(shopName(o.shop_id))} <span class="mono" style="text-transform:none;color:var(--ink-soft);">· #${o.id.slice(0,8)}</span></div>
     </div>
     <div class="ticket-right"><div><div class="ticket-amount">₹${amt}</div></div></div>
@@ -1484,7 +1537,8 @@ function sendWhatsAppReceipt(order){
 function canEditDetails(order){
   const role = App.profile.role;
   if(role === 'owner') return true;
-  if(isArchived(order)) return false; // locked to everyone but the Owner once archived
+  if(isPastGraceArchive(order)) return false; // Delivered/Cancelled archive — Owner only, full stop
+  if(isUnmarked(order)) return role === 'manager'; // missed its date unresolved — Owner or Manager only
   if(role === 'manager') return true;
   if(role === 'shop_staff') return order.shop_id === App.profile.shop_id && ['new','confirmed'].includes(order.status);
   return false;
@@ -1492,7 +1546,8 @@ function canEditDetails(order){
 function canChangeStatusTo(order, newStatus){
   const role = App.profile.role;
   if(role === 'owner') return true; // unrestricted, any status, any time — including restoring an archived order
-  if(isArchived(order)) return false; // locked to everyone but the Owner once archived
+  if(isPastGraceArchive(order)) return false; // Delivered/Cancelled archive — Owner only, full stop
+  if(isUnmarked(order)) return role === 'manager'; // missed its date unresolved — Owner or Manager only
   if(newStatus === 'baking' && order.approval_status === 'pending') return false;
   if(role === 'manager') return true;
   if(role === 'baker') return !['delivered','cancelled'].includes(newStatus);
@@ -1509,8 +1564,11 @@ function canApprove(){ return ['owner','manager'].includes(App.profile.role); }
 function drawOrderModal(order, history, photoUrls){
   const backdrop = document.getElementById('modal-backdrop');
   const editable = canEditDetails(order);
-  const archived = isArchived(order);
+  const pastGrace = isPastGraceArchive(order);
+  const unmarked = isUnmarked(order);
+  const archived = pastGrace || unmarked;
   const isOwner = App.profile.role === 'owner';
+  const canRemark = pastGrace ? isOwner : (unmarked ? ['owner','manager'].includes(App.profile.role) : false);
   backdrop.innerHTML = `
   <div class="modal">
     <div class="modal-head">
@@ -1531,15 +1589,18 @@ function drawOrderModal(order, history, photoUrls){
 
     ${archived ? `
       <div class="lock-note">
-        <span>🗄 Archived — ${STATUS_LABEL[order.status]} on ${formatDate(archiveDateStr(order))}.
-          ${isOwner ? 'As Owner, you can restore it to any status below.' : 'Only the Owner can edit, restore, or delete it.'}</span>
+        ${unmarked
+          ? `<span>⚠️ Unmarked — was due ${formatDate(order.delivery_date)}, still shows as ${STATUS_LABEL[order.status]}, never resolved.
+              ${canRemark ? 'You can remark it below.' : 'Only the Owner or Manager can remark it.'}</span>`
+          : `<span>🗄 Archived — ${STATUS_LABEL[order.status]} on ${formatDate(archiveDateStr(order))}.
+              ${canRemark ? 'As Owner, you can restore it to any status below.' : 'Only the Owner can edit, restore, or delete it.'}</span>`}
       </div>
-      ${isOwner ? `
+      ${canRemark ? `
         <div class="status-track">
           <select class="status-picker" id="m-restore-picker">
             ${[...STATUS_FLOW,'cancelled'].map(s=>`<option value="${s}" ${s===order.status?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}
           </select>
-          <button class="btn btn-primary btn-sm" id="m-restore">↩ Restore to this status</button>
+          <button class="btn btn-primary btn-sm" id="m-restore">${unmarked ? '✎ Remark' : '↩ Restore'} to this status</button>
         </div>` : ''}
     ` : `
       <div class="status-track">
@@ -1587,10 +1648,11 @@ function drawOrderModal(order, history, photoUrls){
   const restoreBtn = document.getElementById('m-restore');
   if(restoreBtn) restoreBtn.onclick = async ()=>{
     const newStatus = document.getElementById('m-restore-picker').value;
+    const verb = unmarked ? 'Remarked' : 'Restored';
     const { error } = await App.sb.from('orders').update({status:newStatus}).eq('id', order.id);
     if(error){ toast(error.message, true); return; }
-    pushAction({label:`Restored to ${STATUS_LABEL[newStatus]} (${order.customer_name})`, table:'orders', id:order.id, before:{status:order.status}, after:{status:newStatus}});
-    toast(`Order restored to ${STATUS_LABEL[newStatus]}`); closeModal(); await loadOrders(); renderView();
+    pushAction({label:`${verb} to ${STATUS_LABEL[newStatus]} (${order.customer_name})`, table:'orders', id:order.id, before:{status:order.status}, after:{status:newStatus}});
+    toast(`Order ${verb.toLowerCase()} to ${STATUS_LABEL[newStatus]}`); closeModal(); await loadOrders(); renderView();
   };
   const appr = document.getElementById('m-approve');
   if(appr) appr.onclick = async ()=>{
@@ -1979,7 +2041,7 @@ function renderFactoryView(){
   const active = App.orders.filter(o=>o.status!=='cancelled' && !isArchived(o));
   content.innerHTML = `
     <div class="content-head"><div><h2>Factory board</h2><div class="sub">Production pipeline across all shops — check reference photos before starting any <span class="tag tag-custom">Custom</span> ticket</div></div></div>
-    <div class="note mint">The Delivered column only shows today's completions — once the day ends, they move to <b>Past Orders</b> automatically.</div>
+    <div class="note mint">Delivered/Cancelled tickets move to <b>Past Orders</b> automatically ${GRACE_MINUTES} minutes after being marked — this board only shows what's still within that window. Orders that missed their delivery date unresolved are pulled out too, tagged <b>Unmarked</b> in Past Orders.</div>
     <div class="board">
       ${STATUS_FLOW.map(status=>{
         const items = active.filter(o=>o.status===status).sort((a,b)=>a.delivery_date.localeCompare(b.delivery_date));
