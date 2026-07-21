@@ -385,6 +385,11 @@ begin
     -- the order was ALREADY archived before this update — nobody but the
     -- Owner (handled above) may touch it further, full stop
     raise exception 'This order is archived — only the Owner can edit, restore, or delete it';
+  elsif old.status not in ('delivered','cancelled') and old.delivery_date < current_date and role not in ('manager') then
+    -- Unmarked: the order missed its own delivery date without ever being
+    -- resolved. Owner/Manager can still remark it; Shop Staff/Baker cannot —
+    -- this is a management follow-up at that point, not routine handling.
+    raise exception 'This order missed its delivery date without being marked — only the Owner or Manager can update it now';
   elsif role = 'manager' then
     null; -- unrestricted for any order that isn't already archived
   elsif role = 'baker' then
@@ -836,6 +841,52 @@ drop trigger if exists trg_profiles_notify on public.profiles;
 create trigger trg_profiles_notify
   after insert on public.profiles
   for each row execute function public.profiles_notify();
+
+-- ============================================================================
+-- 10PM UNRESOLVED-ORDER WARNING — the ONE feature in this entire schema that
+-- actually needs a scheduled job. Everything else (archiving, the Unmarked
+-- tag, every other notification) is computed live with zero cron dependency
+-- — see PAST_ORDERS_SETUP.md for why that matters. This one is different by
+-- necessity: "has it turned 10pm yet" isn't a state change anything can react
+-- to, it's purely about the clock, so it has to be something that actually
+-- runs at that time rather than something recalculated whenever a page loads.
+--
+-- If pg_cron isn't available/enabled on your project, this specific warning
+-- simply won't fire — nothing else in the app depends on it or is affected.
+--
+-- Schedule is in UTC. 16:30 UTC = 22:00 (10pm) IST. If your bakery isn't on
+-- IST, adjust the "30 16" below (minute hour, UTC) to your own 10pm.
+-- ============================================================================
+create extension if not exists pg_cron;
+
+create or replace function public.warn_shop_staff_unresolved_orders()
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare
+  r record;
+begin
+  for r in
+    select o.id, o.shop_id, o.customer_name, o.cake_type, o.catalog_item_snapshot
+    from public.orders o
+    where o.status not in ('delivered','cancelled')
+      and o.delivery_date = current_date
+  loop
+    perform public.notify('role_shop','shop_staff', r.shop_id, null, 'order_at_risk',
+      'Order still unresolved — due today',
+      coalesce(r.customer_name,'') || ' — ' || coalesce(r.catalog_item_snapshot, r.cake_type, 'order') ||
+      ' — mark it before midnight or it moves to Past Orders as Unmarked',
+      r.id);
+  end loop;
+end;
+$$;
+
+do $$ begin
+  perform cron.unschedule('warn-shop-staff-10pm');
+exception when others then null; end $$;
+
+select cron.schedule('warn-shop-staff-10pm', '30 16 * * *',
+  $$select public.warn_shop_staff_unresolved_orders();$$);
 
 -- ============================================================================
 -- PUSH SUBSCRIPTIONS — one row per device that's opted into Web Push.
