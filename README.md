@@ -197,4 +197,8 @@ MIT — free to use, adapt, and learn from.
 
 Built to run a real two-location bakery's daily order flow, end to end.
 
+**Bishal Ranjan Badu**
+
+Data Science | Machine Learning | Predictive Analytics
+
 </div>
