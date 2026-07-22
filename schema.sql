@@ -211,6 +211,16 @@ update public.orders set delivered_at = updated_at where status = 'delivered' an
 update public.orders set cancelled_at = updated_at where status = 'cancelled' and cancelled_at is null;
 alter table public.orders drop constraint if exists orders_kind_check;
 alter table public.orders add constraint orders_kind_check check (order_kind in ('catalog','custom','counter'));
+-- The table's ORIGINAL inline check on order_kind was auto-named
+-- orders_order_kind_check by Postgres and only allowed ('catalog','custom').
+-- `create table if not exists` never re-applies the updated inline definition
+-- to an existing table, and the drop/add above targets a DIFFERENTLY named
+-- constraint (orders_kind_check), so the stale one survives on any DB created
+-- before 'counter' existed and rejects every counter insert with:
+--   new row for relation "orders" violates check constraint "orders_order_kind_check"
+-- Drop and recreate it with the full set.
+alter table public.orders drop constraint if exists orders_order_kind_check;
+alter table public.orders add constraint orders_order_kind_check check (order_kind in ('catalog','custom','counter'));
 do $$ begin
   alter table public.orders add constraint orders_approval_check check (approval_status in ('not_required','pending','approved','rejected'));
 exception when duplicate_object then null; end $$;
