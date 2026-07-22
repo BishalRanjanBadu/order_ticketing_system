@@ -279,6 +279,7 @@
   .history-meta{color:var(--chalk-dim);font-size:.72rem;margin-top:.15rem;}
 
   .status-track{display:flex;gap:.4rem;margin:1rem 0;flex-wrap:wrap;}
+  .status-track select,.status-track input{width:auto;flex:0 0 auto;}
   .status-pill{padding:.4em .85em;border-radius:20px;font-size:.76rem;font-weight:600;border:1px solid var(--line);
     background:var(--bg-panel-2);color:var(--chalk-dim);}
   .status-pill.current{background:var(--accent-coral);color:#fff;border-color:var(--accent-coral);}
@@ -546,7 +547,9 @@ function todayStr(){ return localDateStr(new Date()); }
 function isPastGraceArchive(order){
   if(order.status !== 'delivered' && order.status !== 'cancelled') return false;
   const ts = order.status==='delivered' ? order.delivered_at : order.cancelled_at;
-  if(!ts) return false;
+  // legacy data from before delivered_at/cancelled_at existed — don't let a
+  // missing timestamp mean "never archives"; treat it as already past grace
+  if(!ts) return true;
   return (Date.now() - new Date(ts).getTime()) >= GRACE_MINUTES*60000;
 }
 function minutesUntilArchive(order){
@@ -1596,12 +1599,14 @@ function drawOrderModal(order, history, photoUrls){
               ${canRemark ? 'As Owner, you can restore it to any status below.' : 'Only the Owner can edit, restore, or delete it.'}</span>`}
       </div>
       ${canRemark ? `
-        <div class="status-track">
+        <div class="status-track" style="flex-wrap:wrap;">
           <select class="status-picker" id="m-restore-picker">
             ${[...STATUS_FLOW,'cancelled'].map(s=>`<option value="${s}" ${s===order.status?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}
           </select>
+          ${unmarked ? `<input type="date" class="status-picker" id="m-restore-date" value="${todayStr()}" title="New delivery date">` : ''}
           <button class="btn btn-primary btn-sm" id="m-restore">${unmarked ? '✎ Remark' : '↩ Restore'} to this status</button>
-        </div>` : ''}
+        </div>
+        ${unmarked ? `<div class="sub" style="margin-top:.4rem;">Picking anything other than Delivered/Cancelled needs a new delivery date too — otherwise it's still overdue the instant you save, and stays tagged Unmarked.</div>` : ''}` : ''}
     ` : `
       <div class="status-track">
         ${STATUS_FLOW.map(s=>{
@@ -1649,9 +1654,12 @@ function drawOrderModal(order, history, photoUrls){
   if(restoreBtn) restoreBtn.onclick = async ()=>{
     const newStatus = document.getElementById('m-restore-picker').value;
     const verb = unmarked ? 'Remarked' : 'Restored';
-    const { error } = await App.sb.from('orders').update({status:newStatus}).eq('id', order.id);
+    const patch = {status:newStatus};
+    const dateEl = document.getElementById('m-restore-date');
+    if(dateEl && newStatus !== 'delivered' && newStatus !== 'cancelled') patch.delivery_date = dateEl.value;
+    const { error } = await App.sb.from('orders').update(patch).eq('id', order.id);
     if(error){ toast(error.message, true); return; }
-    pushAction({label:`${verb} to ${STATUS_LABEL[newStatus]} (${order.customer_name})`, table:'orders', id:order.id, before:{status:order.status}, after:{status:newStatus}});
+    pushAction({label:`${verb} to ${STATUS_LABEL[newStatus]} (${order.customer_name})`, table:'orders', id:order.id, before:{status:order.status, delivery_date:order.delivery_date}, after:patch});
     toast(`Order ${verb.toLowerCase()} to ${STATUS_LABEL[newStatus]}`); closeModal(); await loadOrders(); renderView();
   };
   const appr = document.getElementById('m-approve');
