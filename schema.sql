@@ -146,8 +146,9 @@ create table if not exists public.orders (
   customer_name text not null,
   customer_phone text not null default '',
 
-  -- catalog vs. custom
-  order_kind text not null default 'catalog' check (order_kind in ('catalog','custom')),
+  -- catalog vs. custom vs. counter (walk-in, already-decided sale — no
+  -- design reference needed, shop staff run it start to finish)
+  order_kind text not null default 'catalog' check (order_kind in ('catalog','custom','counter')),
   catalog_item_id uuid references public.catalog_items(id) on delete set null,
   catalog_category_snapshot text not null default '',  -- captured at order time so
   catalog_item_snapshot text not null default '',      -- renames/removals later don't rewrite history
@@ -208,9 +209,8 @@ alter table public.orders add column if not exists cancelled_at timestamptz;
 -- their last-updated time, which for these rows is when that status was set
 update public.orders set delivered_at = updated_at where status = 'delivered' and delivered_at is null;
 update public.orders set cancelled_at = updated_at where status = 'cancelled' and cancelled_at is null;
-do $$ begin
-  alter table public.orders add constraint orders_kind_check check (order_kind in ('catalog','custom'));
-exception when duplicate_object then null; end $$;
+alter table public.orders drop constraint if exists orders_kind_check;
+alter table public.orders add constraint orders_kind_check check (order_kind in ('catalog','custom','counter'));
 do $$ begin
   alter table public.orders add constraint orders_approval_check check (approval_status in ('not_required','pending','approved','rejected'));
 exception when duplicate_object then null; end $$;
@@ -340,6 +340,7 @@ declare
   non_status_changed boolean;    -- any field besides status/is_priority/approval
   locked_fields_changed boolean; -- non_status_changed, excluding is_priority
   approval_changed boolean;
+  was_unmarked boolean := old.status not in ('delivered','cancelled') and old.delivery_date < current_date;
 begin
   non_status_changed :=
     (old.shop_id, old.customer_name, old.customer_phone, old.cake_type, old.size,
@@ -406,14 +407,20 @@ begin
     if old.shop_id <> public.my_shop() then
       raise exception 'You can only edit orders for your own shop';
     end if;
-    if locked_fields_changed and old.status not in ('new','confirmed') then
-      raise exception 'This order is locked — production has already started';
-    end if;
-    if new.status not in ('cancelled','delivered') and old.status <> new.status then
-      raise exception 'Only Baker/Manager/Owner can confirm an order or move it through production';
-    end if;
-    if new.status = 'delivered' and old.status not in ('ready','delivered') then
-      raise exception 'An order can only be marked delivered once it is ready';
+    if old.order_kind = 'counter' then
+      -- Counter orders are a walk-in sale shop staff run start to finish —
+      -- full status control over their own shop's ticket, same as a Manager.
+      null;
+    else
+      if locked_fields_changed and old.status not in ('new','confirmed') then
+        raise exception 'This order is locked — production has already started';
+      end if;
+      if new.status not in ('cancelled','delivered') and old.status <> new.status then
+        raise exception 'Only Baker/Manager/Owner can confirm an order or move it through production';
+      end if;
+      if new.status = 'delivered' and old.status not in ('ready','delivered') then
+        raise exception 'An order can only be marked delivered once it is ready';
+      end if;
     end if;
   else
     raise exception 'Not authorized to edit orders';
@@ -425,14 +432,18 @@ begin
   end if;
 
   -- Past Orders framework: stamp the exact moment this order first enters
-  -- (or re-enters, after an Owner restore) an archived state — this is the
-  -- timestamp the app compares against "today" to decide grace-period vs
-  -- fully-archived. See PAST_ORDERS_SETUP.md.
+  -- an archived state — this is the timestamp the app compares against
+  -- "today" to decide grace-period vs fully-archived. See
+  -- PAST_ORDERS_SETUP.md. Exception: an order that was sitting Unmarked
+  -- (missed its delivery date, never resolved) and is now being remarked
+  -- Delivered/Cancelled gets backdated to its original delivery_date, not
+  -- the moment of the correction — it reflects when the order was actually
+  -- handled, not when someone got around to fixing the record.
   if new.status = 'delivered' and old.status is distinct from 'delivered' then
-    new.delivered_at := now();
+    new.delivered_at := case when was_unmarked then old.delivery_date::timestamptz else now() end;
   end if;
   if new.status = 'cancelled' and old.status is distinct from 'cancelled' then
-    new.cancelled_at := now();
+    new.cancelled_at := case when was_unmarked then old.delivery_date::timestamptz else now() end;
   end if;
 
   new.updated_at := now();
@@ -455,7 +466,9 @@ as $$
 begin
   insert into public.order_history (order_id, changed_by, change_type, field_changed, old_value, new_value)
   values (new.id, auth.uid(), 'created', null, null,
-    case when new.order_kind = 'custom' then 'Custom order created' else 'Order created' end);
+    case when new.order_kind = 'custom' then 'Custom order created'
+         when new.order_kind = 'counter' then 'Counter order created'
+         else 'Order created' end);
   return new;
 end;
 $$;
