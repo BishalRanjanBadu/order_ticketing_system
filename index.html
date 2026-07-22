@@ -571,7 +571,18 @@ function archiveDateStr(order){
   if(order.status==='delivered' && order.delivered_at) return localDateStr(new Date(order.delivered_at));
   if(order.status==='cancelled' && order.cancelled_at) return localDateStr(new Date(order.cancelled_at));
   if(isUnmarked(order)) return order.delivery_date;
-  return null;
+  // Delivered/Cancelled with no stored timestamp — legacy rows, or orders
+  // delivered before delivered_at/cancelled_at (and their trigger) existed.
+  // isPastGraceArchive still counts these as archived (returns true when the
+  // timestamp is missing), so this MUST hand back a sortable date. Returning
+  // null here makes the Past Orders sort call null.localeCompare(...), which
+  // throws and freezes the whole view on "Loading…" for anyone whose data
+  // includes such a row (Owner/Manager see all shops, so they always hit it).
+  if(order.status==='delivered' || order.status==='cancelled'){
+    if(order.updated_at) return localDateStr(new Date(order.updated_at));
+    return order.delivery_date || order.order_date || todayStr();
+  }
+  return order.delivery_date || todayStr();
 }
 
 /* ============================================================================
@@ -1278,8 +1289,8 @@ function filterBarHtml(withSearch){
     ${withSearch ? `<div class="field grow-2"><label>Search</label><input type="text" id="f-q" placeholder="Customer, phone, cake…" value="${escapeAttr(f.q)}"></div>` : ''}
     <div class="field"><label>Shop</label><select id="f-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}" ${f.shop===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
     <div class="field"><label>Status</label><select id="f-status"><option value="">All statuses</option>${['new','confirmed','baking','ready','delivered','cancelled'].map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
-    <div class="field"><label>Delivery from</label><input type="date" id="f-from" value="${f.from}" max="${todayStr()}"></div>
-    <div class="field"><label>Delivery to</label><input type="date" id="f-to" value="${f.to}" max="${todayStr()}"></div>
+    <div class="field"><label>Delivery from</label><input type="date" id="f-from" value="${f.from}"></div>
+    <div class="field"><label>Delivery to</label><input type="date" id="f-to" value="${f.to}"></div>
     <button class="btn btn-primary" id="f-apply">Filter</button>
     <button class="btn btn-ghost" id="f-clear">Clear</button>
   </div>`;
@@ -1404,7 +1415,7 @@ function applyPastFilters(list){
 }
 function renderPastOrdersView(){
   const content = document.getElementById('content');
-  const filtered = applyPastFilters(pastOrdersList()).slice().sort((a,b)=> archiveDateStr(b).localeCompare(archiveDateStr(a)));
+  const filtered = applyPastFilters(pastOrdersList()).slice().sort((a,b)=> (archiveDateStr(b)||"").localeCompare(archiveDateStr(a)||""));
   content.innerHTML = `
     <div class="content-head"><div><h2>Past Orders</h2><div class="sub" id="past-summary">${filtered.length} of ${pastOrdersList().length} archived order${pastOrdersList().length===1?'':'s'}</div></div></div>
     <div class="note">Delivered/Cancelled: Owner-only to edit, restore, or delete. <b>Unmarked</b> (missed its delivery date unresolved): Owner or Manager can remark it — Shop Staff/Baker can view but not touch it.</div>
@@ -1443,7 +1454,7 @@ function updatePastResults(){
   const rail = document.getElementById('past-rail');
   if(!rail) return;
   const all = pastOrdersList();
-  const filtered = applyPastFilters(all).slice().sort((a,b)=> archiveDateStr(b).localeCompare(archiveDateStr(a)));
+  const filtered = applyPastFilters(all).slice().sort((a,b)=> (archiveDateStr(b)||"").localeCompare(archiveDateStr(a)||""));
   const summary = document.getElementById('past-summary');
   if(summary) summary.textContent = `${filtered.length} of ${all.length} archived order${all.length===1?'':'s'}`;
   if(filtered.length === 0){
