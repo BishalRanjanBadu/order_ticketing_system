@@ -665,20 +665,27 @@ function googleG(){
 ============================================================================ */
 async function afterLogin(){
   root.innerHTML = `<div class="center-screen"><div class="loading-row">Loading your bakery…</div></div>`;
-  let profile = await fetchMyProfile();
-  let tries = 0;
-  while(!profile && tries < 6){ await sleep(500); profile = await fetchMyProfile(); tries++; }
+  let profile;
+  try{
+    profile = await withTimeout(fetchMyProfile(), 15000, 'Profile lookup');
+    let tries = 0;
+    while(!profile && tries < 6){ await sleep(500); profile = await withTimeout(fetchMyProfile(), 15000, 'Profile lookup'); tries++; }
+  }catch(err){
+    renderBootError(err); return;
+  }
   if(!profile){
     // handle_new_user() only fires on a brand-new auth.users row. If an Owner
     // hard-deleted this person's profile earlier, their auth account still
     // exists, so that trigger won't fire again — recreate a safe pending
     // profile here instead of leaving them stuck on "Almost there" forever.
-    const { data: healed } = await App.sb.from('profiles').insert({
-      id: App.session.user.id, email: App.session.user.email,
-      full_name: App.session.user.user_metadata?.full_name || App.session.user.user_metadata?.name || App.session.user.email.split('@')[0],
-      role: 'shop_staff', status: 'pending',
-    }).select().maybeSingle();
-    profile = healed || null;
+    try{
+      const { data: healed } = await withTimeout(App.sb.from('profiles').insert({
+        id: App.session.user.id, email: App.session.user.email,
+        full_name: App.session.user.user_metadata?.full_name || App.session.user.user_metadata?.name || App.session.user.email.split('@')[0],
+        role: 'shop_staff', status: 'pending',
+      }).select().maybeSingle(), 15000, 'Profile setup');
+      profile = healed || null;
+    }catch(err){ renderBootError(err); return; }
   }
   if(!profile){
     root.innerHTML = `<div class="center-screen"><div class="panel"><h1>Almost there</h1>
@@ -691,7 +698,11 @@ async function afterLogin(){
 
   if(profile.status !== 'active'){ renderBlockedScreen(profile.status); return; }
 
-  await Promise.all([loadShops(), loadProfiles(), loadCatalog(), loadSettings()]);
+  try{
+    await withTimeout(Promise.all([loadShops(), loadProfiles(), loadCatalog(), loadSettings()]), 20000, 'Bakery data');
+  }catch(err){
+    renderBootError(err); return;
+  }
   App.view = defaultViewFor(App.profile.role);
   renderShell();
   startActivityTimer();
@@ -717,6 +728,11 @@ async function fetchMyProfile(){
   const { data, error } = await App.sb.from('profiles').select('*').eq('id', App.session.user.id).maybeSingle();
   if(error){ console.error(error); return null; }
   return data;
+}
+function renderBootError(err){
+  root.innerHTML = `<div class="center-screen"><div class="panel"><h1>Couldn't load</h1>
+    <div class="sub">${escapeHtml(err && err.message ? err.message : 'Connection problem — check your network and retry.')}</div>
+    <button class="btn btn-primary btn-block" onclick="location.reload()">Retry</button></div></div>`;
 }
 function renderBlockedScreen(status){
   const copy = {
@@ -1193,8 +1209,8 @@ async function renderView(){
   const content = document.getElementById('content');
   content.innerHTML = `<div class="loading-row">Loading…</div>`;
   try{
-    if(!App.ordersLoaded) await loadOrders();
-    if(!App.catalogLoaded) await loadCatalog();
+    if(!App.ordersLoaded) await withTimeout(loadOrders(), 15000, 'Orders');
+    if(!App.catalogLoaded) await withTimeout(loadCatalog(), 15000, 'Catalog');
   }catch(err){
     content.innerHTML = `<div class="loading-row" style="flex-direction:column;gap:.8rem;">
       <div>Couldn't load your data — ${escapeHtml(err && err.message ? err.message : 'connection problem')}.</div>
@@ -1262,8 +1278,8 @@ function filterBarHtml(withSearch){
     ${withSearch ? `<div class="field grow-2"><label>Search</label><input type="text" id="f-q" placeholder="Customer, phone, cake…" value="${escapeAttr(f.q)}"></div>` : ''}
     <div class="field"><label>Shop</label><select id="f-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}" ${f.shop===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
     <div class="field"><label>Status</label><select id="f-status"><option value="">All statuses</option>${['new','confirmed','baking','ready','delivered','cancelled'].map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
-    <div class="field"><label>Delivery from</label><input type="date" id="f-from" value="${f.from}"></div>
-    <div class="field"><label>Delivery to</label><input type="date" id="f-to" value="${f.to}"></div>
+    <div class="field"><label>Delivery from</label><input type="date" id="f-from" value="${f.from}" max="${todayStr()}"></div>
+    <div class="field"><label>Delivery to</label><input type="date" id="f-to" value="${f.to}" max="${todayStr()}"></div>
     <button class="btn btn-primary" id="f-apply">Filter</button>
     <button class="btn btn-ghost" id="f-clear">Clear</button>
   </div>`;
@@ -2593,6 +2609,11 @@ const iconWhatsapp = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.
    HELPERS
 ============================================================================ */
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function withTimeout(promise, ms, label){
+  let timer;
+  const timeout = new Promise((_, reject)=>{ timer = setTimeout(()=> reject(new Error(`${label||'Request'} timed out. Check your connection and retry.`)), ms); });
+  return Promise.race([promise, timeout]).finally(()=> clearTimeout(timer));
+}
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeAttr(s){ return escapeHtml(s); }
 function formatDate(iso){ if(!iso) return '—'; const d = new Date(iso+'T00:00:00'); return d.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}); }
