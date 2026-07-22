@@ -247,6 +247,7 @@
     font-weight:800;text-transform:uppercase;letter-spacing:.04em;}
   .tag-rush{background:#fbe4ea;color:#a13d5e;}
   .tag-custom{background:#ece3f5;color:#5c4585;}
+  .tag-counter{background:#dcf0e8;color:#1f7a5c;}
   .tag-approval{background:#fde6d3;color:#9a5417;}
 
   .badge{display:inline-block;padding:.2em .6em;border-radius:20px;font-size:.68rem;font-weight:700;
@@ -1191,8 +1192,18 @@ function timeAgo(ts){
 async function renderView(){
   const content = document.getElementById('content');
   content.innerHTML = `<div class="loading-row">Loading…</div>`;
-  if(!App.ordersLoaded) await loadOrders();
-  if(!App.catalogLoaded) await loadCatalog();
+  try{
+    if(!App.ordersLoaded) await loadOrders();
+    if(!App.catalogLoaded) await loadCatalog();
+  }catch(err){
+    content.innerHTML = `<div class="loading-row" style="flex-direction:column;gap:.8rem;">
+      <div>Couldn't load your data — ${escapeHtml(err && err.message ? err.message : 'connection problem')}.</div>
+      <button class="btn btn-primary btn-sm" id="retry-load">Retry</button>
+    </div>`;
+    const retryBtn = document.getElementById('retry-load');
+    if(retryBtn) retryBtn.onclick = ()=>{ App.ordersLoaded = false; App.catalogLoaded = false; renderView(); };
+    return;
+  }
   if(!isViewAllowed(App.profile.role, App.view)) App.view = defaultViewFor(App.profile.role);
   switch(App.view){
     case 'orders': renderOrdersView(); break;
@@ -1253,6 +1264,7 @@ function filterBarHtml(withSearch){
     <div class="field"><label>Status</label><select id="f-status"><option value="">All statuses</option>${['new','confirmed','baking','ready','delivered','cancelled'].map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
     <div class="field"><label>Delivery from</label><input type="date" id="f-from" value="${f.from}"></div>
     <div class="field"><label>Delivery to</label><input type="date" id="f-to" value="${f.to}"></div>
+    <button class="btn btn-primary" id="f-apply">Filter</button>
     <button class="btn btn-ghost" id="f-clear">Clear</button>
   </div>`;
 }
@@ -1263,6 +1275,16 @@ function wireFilterBar(){
   document.getElementById('f-status').onchange = e=>{ App.filters.status = e.target.value; updateOrdersResults(); };
   document.getElementById('f-from').onchange = e=>{ App.filters.from = e.target.value; updateOrdersResults(); };
   document.getElementById('f-to').onchange = e=>{ App.filters.to = e.target.value; updateOrdersResults(); };
+  document.getElementById('f-apply').onclick = ()=>{
+    App.filters = {
+      shop: document.getElementById('f-shop').value,
+      status: document.getElementById('f-status').value,
+      from: document.getElementById('f-from').value,
+      to: document.getElementById('f-to').value,
+      q: q ? q.value : App.filters.q,
+    };
+    updateOrdersResults();
+  };
   document.getElementById('f-clear').onclick = ()=>{ App.filters = {shop:'',status:'',from:'',to:'',q:''}; const qEl=document.getElementById('f-q'); if(qEl) qEl.value=''; updateOrdersResults(); };
 }
 function updateOrdersResults(){
@@ -1278,10 +1300,20 @@ function updateOrdersResults(){
   rail.innerHTML = filtered.map(o=>ticketHtml(o)).join('');
   rail.querySelectorAll('.ticket').forEach(t=>{ t.onclick = ()=> openOrderModal(t.dataset.id); });
 }
+function kindItemLabel(o){
+  if(o.order_kind === 'custom') return 'Custom cake';
+  if(o.order_kind === 'counter') return o.cake_type || o.catalog_item_snapshot || 'Counter sale';
+  return o.catalog_item_snapshot || o.cake_type || 'Cake';
+}
+function kindTagHtml(o){
+  if(o.order_kind === 'custom') return '<span class="tag tag-custom">Custom</span>';
+  if(o.order_kind === 'counter') return '<span class="tag tag-counter">Counter</span>';
+  return '';
+}
 function ticketHtml(o){
   const amt = Number(o.amount||0).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
   const balance = Math.max(0, Number(o.amount||0) - Number(o.advance_amount||0));
-  const itemLabel = o.order_kind === 'custom' ? 'Custom cake' : (o.catalog_item_snapshot || o.cake_type || 'Cake');
+  const itemLabel = kindItemLabel(o);
   const minsLeft = (o.status==='delivered' || o.status==='cancelled') ? minutesUntilArchive(o) : null;
   return `
   <div class="ticket status-${o.status} ${o.is_priority ? 'priority':''}" data-id="${o.id}">
@@ -1289,7 +1321,7 @@ function ticketHtml(o){
     <div class="ticket-main">
       <div class="ticket-title">${escapeHtml(o.customer_name)}
         ${o.is_priority ? '<span class="tag tag-rush">Rush</span>' : ''}
-        ${o.order_kind==='custom' ? '<span class="tag tag-custom">Custom</span>' : ''}
+        ${kindTagHtml(o)}
         ${o.approval_status==='pending' ? '<span class="tag tag-approval">Needs approval</span>' : ''}
         ${balance>0 && o.status!=='cancelled' ? `<span class="tag tag-balance">₹${balance.toLocaleString()} due</span>` : ''}
         ${minsLeft!=null ? `<span class="grace-countdown">archives in ${minsLeft}m</span>` : ''}
@@ -1364,8 +1396,9 @@ function renderPastOrdersView(){
       <div class="field grow-2"><label>Search</label><input type="text" id="pf-q" placeholder="Customer, phone, cake…" value="${escapeAttr(App.pastFilters.q)}"></div>
       <div class="field"><label>Shop</label><select id="pf-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}" ${App.pastFilters.shop===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
       <div class="field"><label>Tag</label><select id="pf-status"><option value="">All</option><option value="delivered" ${App.pastFilters.status==='delivered'?'selected':''}>Delivered</option><option value="cancelled" ${App.pastFilters.status==='cancelled'?'selected':''}>Cancelled</option><option value="unmarked" ${App.pastFilters.status==='unmarked'?'selected':''}>Unmarked</option></select></div>
-      <div class="field"><label>Archived from</label><input type="date" id="pf-from" value="${App.pastFilters.from}"></div>
-      <div class="field"><label>Archived to</label><input type="date" id="pf-to" value="${App.pastFilters.to}"></div>
+      <div class="field"><label>Archived from</label><input type="date" id="pf-from" value="${App.pastFilters.from}" max="${todayStr()}"></div>
+      <div class="field"><label>Archived to</label><input type="date" id="pf-to" value="${App.pastFilters.to}" max="${todayStr()}"></div>
+      <button class="btn btn-primary" id="pf-apply">Filter</button>
       <button class="btn btn-ghost" id="pf-clear">Clear</button>
     </div>
     <div class="rail" id="past-rail"></div>`;
@@ -1378,6 +1411,16 @@ function wirePastFilterBar(){
   document.getElementById('pf-status').onchange = e=>{ App.pastFilters.status = e.target.value; updatePastResults(); };
   document.getElementById('pf-from').onchange = e=>{ App.pastFilters.from = e.target.value; updatePastResults(); };
   document.getElementById('pf-to').onchange = e=>{ App.pastFilters.to = e.target.value; updatePastResults(); };
+  document.getElementById('pf-apply').onclick = ()=>{
+    App.pastFilters = {
+      shop: document.getElementById('pf-shop').value,
+      status: document.getElementById('pf-status').value,
+      from: document.getElementById('pf-from').value,
+      to: document.getElementById('pf-to').value,
+      q: document.getElementById('pf-q').value,
+    };
+    updatePastResults();
+  };
   document.getElementById('pf-clear').onclick = ()=>{ App.pastFilters = {shop:'',status:'',from:'',to:'',q:''}; const qEl=document.getElementById('pf-q'); if(qEl) qEl.value=''; updatePastResults(); };
 }
 function updatePastResults(){
@@ -1396,7 +1439,7 @@ function updatePastResults(){
 }
 function pastTicketHtml(o){
   const amt = Number(o.amount||0).toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
-  const itemLabel = o.order_kind === 'custom' ? 'Custom cake' : (o.catalog_item_snapshot || o.cake_type || 'Cake');
+  const itemLabel = kindItemLabel(o);
   const unmarked = isUnmarked(o);
   const tag = unmarked ? '<span class="tag tag-archived-unmarked">Unmarked</span>'
             : o.status==='delivered' ? '<span class="tag tag-archived-delivered">Delivered</span>'
@@ -1408,7 +1451,7 @@ function pastTicketHtml(o){
   <div class="ticket status-${unmarked?'cancelled':o.status}" data-id="${o.id}">
     ${tierIcon(unmarked?'cancelled':o.status, 46)}
     <div class="ticket-main">
-      <div class="ticket-title">${escapeHtml(o.customer_name)} ${tag}</div>
+      <div class="ticket-title">${escapeHtml(o.customer_name)} ${kindTagHtml(o)} ${tag}</div>
       <div class="ticket-meta">${metaLine}</div>
       <div class="ticket-shop">${escapeHtml(shopName(o.shop_id))} <span class="mono" style="text-transform:none;color:var(--ink-soft);">· #${o.id.slice(0,8)}</span></div>
     </div>
@@ -1512,7 +1555,7 @@ function normalizePhoneForWhatsApp(phone){
 function buildReceiptText(order){
   const total = Number(order.amount||0), paid = Number(order.advance_amount||0);
   const balance = Math.max(0, total-paid);
-  const item = order.order_kind === 'custom' ? (order.cake_type || 'Custom cake') : (order.catalog_item_snapshot || 'Cake');
+  const item = kindItemLabel(order);
   const lines = [
     `Cakes & Bakes — Order Receipt`,
     `Order #${order.id.slice(0,8)} · ${shopName(order.shop_id)}`,
@@ -1543,7 +1586,11 @@ function canEditDetails(order){
   if(isPastGraceArchive(order)) return false; // Delivered/Cancelled archive — Owner only, full stop
   if(isUnmarked(order)) return role === 'manager'; // missed its date unresolved — Owner or Manager only
   if(role === 'manager') return true;
-  if(role === 'shop_staff') return order.shop_id === App.profile.shop_id && ['new','confirmed'].includes(order.status);
+  if(role === 'shop_staff'){
+    if(order.shop_id !== App.profile.shop_id) return false;
+    if(order.order_kind === 'counter') return true; // shop staff run counter orders start to finish
+    return ['new','confirmed'].includes(order.status);
+  }
   return false;
 }
 function canChangeStatusTo(order, newStatus){
@@ -1556,6 +1603,7 @@ function canChangeStatusTo(order, newStatus){
   if(role === 'baker') return !['delivered','cancelled'].includes(newStatus);
   if(role === 'shop_staff'){
     if(order.shop_id !== App.profile.shop_id) return false;
+    if(order.order_kind === 'counter') return true; // full board access on their own counter orders
     if(newStatus === 'delivered') return ['ready','delivered'].includes(order.status);
     return newStatus === 'cancelled';
   }
@@ -1576,7 +1624,7 @@ function drawOrderModal(order, history, photoUrls){
   <div class="modal">
     <div class="modal-head">
       <div>
-        <div class="panel-eyebrow mono">#${order.id.slice(0,8)} · ${escapeHtml(shopName(order.shop_id))} ${order.order_kind==='custom'?' · <span style="color:var(--accent-plum);">CUSTOM</span>':''}</div>
+        <div class="panel-eyebrow mono">#${order.id.slice(0,8)} · ${escapeHtml(shopName(order.shop_id))} ${order.order_kind==='custom'?' · <span style="color:var(--accent-plum);">CUSTOM</span>':''}${order.order_kind==='counter'?' · <span style="color:#1f7a5c;">COUNTER</span>':''}</div>
         <h2>${escapeHtml(order.customer_name)}</h2>
       </div>
       <button class="modal-close" id="m-close">×</button>
@@ -1709,6 +1757,7 @@ function drawModalTabBody(order, history, editable, photoUrls){
   }
   const locked = App.profile.role === 'shop_staff' && !editable && !isArchived(order);
   const isCustom = order.order_kind === 'custom';
+  const isCounter = order.order_kind === 'counter';
   const photoSection = photoUrls.length ? `
     <div class="field">
       <label>Reference photos</label>
@@ -1731,6 +1780,8 @@ function drawModalTabBody(order, history, editable, photoUrls){
       <div class="field"><label>Cake description</label><input type="text" id="of-type" value="${escapeAttr(order.cake_type)}" ${!editable?'disabled':''}></div>
       <div class="field"><label>Design description</label><textarea id="of-notes" rows="2" ${!editable?'disabled':''}>${escapeHtml(order.design_notes)}</textarea></div>
       ${photoSection}
+    ` : isCounter ? `
+      <div class="field"><label>Item</label><input type="text" id="of-type" value="${escapeAttr(order.cake_type)}" ${!editable?'disabled':''}></div>
     ` : `
       <div class="field"><label>Catalog item</label><input type="text" value="${escapeAttr(order.catalog_category_snapshot)} — ${escapeAttr(order.catalog_item_snapshot)}" disabled></div>
       <div class="field"><label>Design notes</label><textarea id="of-notes" rows="2" ${!editable?'disabled':''}>${escapeHtml(order.design_notes)}</textarea></div>
@@ -1804,11 +1855,12 @@ function renderNewOrderView(){
   const shopLocked = role === 'shop_staff';
   const f = App.orderForm;
   content.innerHTML = `
-    <div class="content-head"><div><h2>New order</h2><div class="sub">Pick from the catalog, or start a fully custom cake</div></div></div>
+    <div class="content-head"><div><h2>New order</h2><div class="sub">Pick from the catalog, start a fully custom cake, or ring up a counter sale</div></div></div>
     <div class="panel" style="max-width:720px;padding:1.6rem;">
       <div class="mode-toggle">
         <button class="mode-btn ${f.mode==='catalog'?'active':''}" id="mode-catalog">Catalog item</button>
         <button class="mode-btn ${f.mode==='custom'?'active':''}" id="mode-custom">+ Customized Order</button>
+        <button class="mode-btn ${f.mode==='counter'?'active':''}" id="mode-counter">Counter Order</button>
       </div>
 
       <div class="field">
@@ -1820,6 +1872,7 @@ function renderNewOrderView(){
 
       <div id="mode-body"></div>
 
+      ${f.mode !== 'counter' ? `
       <div class="field">
         <label>Reference photos (optional, up to ${MAX_PHOTOS})</label>
         <div class="upload-box">
@@ -1828,7 +1881,7 @@ function renderNewOrderView(){
           <div class="sub" style="margin-top:.4rem;">Photos are compressed automatically before upload and can be attached to any order type.</div>
         </div>
         <div class="photo-row" id="n-photo-row"></div>
-      </div>
+      </div>` : ''}
 
       <div class="field-row">
         <div class="field"><label>Customer name *</label><input type="text" id="n-name" placeholder="Full name"></div>
@@ -1857,9 +1910,11 @@ function renderNewOrderView(){
   `;
   document.getElementById('mode-catalog').onclick = ()=>{ App.orderForm.mode='catalog'; renderNewOrderView(); };
   document.getElementById('mode-custom').onclick = ()=>{ App.orderForm.mode='custom'; renderNewOrderView(); };
-  document.getElementById('n-photos').onchange = onPhotosSelected;
+  document.getElementById('mode-counter').onclick = ()=>{ App.orderForm.mode='counter'; renderNewOrderView(); };
+  const photosInput = document.getElementById('n-photos');
+  if(photosInput) photosInput.onchange = onPhotosSelected;
   drawModeBody();
-  renderPhotoRow();
+  if(document.getElementById('n-photo-row')) renderPhotoRow();
   document.getElementById('n-submit').onclick = submitNewOrder;
 }
 function wireBalanceReadout(amountId, advanceId, balanceId){
@@ -1902,7 +1957,7 @@ function drawModeBody(){
     body.querySelectorAll('.item-card').forEach(c=> c.onclick = ()=>{ f.itemId = c.dataset.item; drawModeBody(); });
     const wEl = document.getElementById('n-weight');
     if(wEl) wEl.oninput = ()=>{ f.weight = parseFloat(wEl.value||'1'); const it = catalogItemById(f.itemId); const amtEl=document.getElementById('n-amount'); if(it && amtEl){ amtEl.value = suggestPrice(it, f.weight); amtEl.dispatchEvent(new Event('input')); } };
-  }else{
+  }else if(f.mode === 'custom'){
     body.innerHTML = `
       <div class="field"><label>Cake description</label><input type="text" id="n-ctype" placeholder="e.g. 3-tier unicorn theme cake"></div>
       <div class="field"><label>Design description</label><textarea id="n-notes" rows="3" placeholder="Colors, references, decoration details…"></textarea></div>
@@ -1911,6 +1966,15 @@ function drawModeBody(){
         <div class="field"><label>Quoted price (₹) — manual, no auto-calc *</label><input type="number" step="0.01" id="n-amount" placeholder="0.00"></div>
       </div>
       ${approvalThreshold() ? `<div class="sub" style="margin-bottom:.6rem;">Custom orders of ₹${approvalThreshold().toLocaleString()} or more need Owner/Manager approval before they can start baking.</div>` : ''}
+    `;
+  }else{
+    body.innerHTML = `
+      <div class="note mint">Counter sale — no design reference needed. Once added, your shop can run this ticket through the whole board without waiting on Baker/Manager.</div>
+      <div class="field"><label>Item</label><input type="text" id="n-ctype" placeholder="e.g. 1kg chocolate truffle, ready stock"></div>
+      <div class="field-row">
+        <div class="field"><label>Weight (kg)</label><input type="number" step="0.5" min="0.5" id="n-weight" value="1"></div>
+        <div class="field"><label>Amount (₹) *</label><input type="number" step="0.01" id="n-amount" placeholder="0.00"></div>
+      </div>
     `;
   }
   wireBalanceReadout('n-amount','n-advance','n-balance');
@@ -2018,7 +2082,7 @@ async function submitNewOrder(){
     if(error){ toast(error.message, true); return; }
     toast('Order added'); await loadOrders(); App.view='orders'; renderShell();
     offerReceiptAfterCreate(created);
-  }else{
+  }else if(f.mode === 'custom'){
     if(!amount){ toast('Enter a quoted price for the custom order', true); return; }
     try{
       const paths = await uploadPhotos();
@@ -2034,6 +2098,17 @@ async function submitNewOrder(){
       toast(err.message || 'Could not save custom order', true);
       btn.disabled = false; btn.textContent = 'Add order to rail';
     }
+  }else{
+    // Counter order — walk-in sale, no photo attachment, no approval gate.
+    const itemDesc = document.getElementById('n-ctype').value.trim();
+    if(!itemDesc){ toast('Enter what the item is', true); return; }
+    if(!amount){ toast('Enter the amount for the counter sale', true); return; }
+    payload = { ...payload, order_kind:'counter', cake_type: itemDesc,
+      design_notes:'', reference_photos: [] };
+    const { data: created, error } = await App.sb.from('orders').insert(payload).select().maybeSingle();
+    if(error){ toast(error.message, true); return; }
+    toast('Counter order added'); await loadOrders(); App.view='orders'; renderShell();
+    offerReceiptAfterCreate(created);
   }
 }
 function offerReceiptAfterCreate(order){
@@ -2065,12 +2140,12 @@ function boardCardHtml(o){
   <div class="board-card status-${o.status} ${o.is_priority?'priority':''}" data-id="${o.id}">
     <div class="bc-title">${escapeHtml(o.customer_name)}
       ${o.is_priority?'<span class="tag tag-rush">Rush</span>':''}
-      ${o.order_kind==='custom'?'<span class="tag tag-custom">Custom</span>':''}
+      ${kindTagHtml(o)}
       ${o.approval_status==='pending'?'<span class="tag tag-approval">Needs approval</span>':''}
       ${balance>0?`<span class="tag tag-balance">₹${balance.toLocaleString()} due</span>`:''}
     </div>
     <div class="bc-meta">${escapeHtml(shopName(o.shop_id))} · ${formatDate(o.delivery_date)}${o.delivery_time?' '+formatTime(o.delivery_time):''}</div>
-    <div class="bc-meta">${escapeHtml(o.order_kind==='custom' ? (o.cake_type||'Custom cake') : (o.catalog_item_snapshot||'Cake'))}</div>
+    <div class="bc-meta">${escapeHtml(kindItemLabel(o))}</div>
   </div>`;
 }
 
@@ -2085,13 +2160,14 @@ function renderAnalyticsView(){
   const avg = totalOrders ? totalRevenue/totalOrders : 0;
   const activeProd = orders.filter(o=>['confirmed','baking'].includes(o.status)).length;
   const customCount = orders.filter(o=>o.order_kind==='custom').length;
+  const counterCount = orders.filter(o=>o.order_kind==='counter').length;
   const pendingBalance = orders.reduce((s,o)=> s + Math.max(0, Number(o.amount||0)-Number(o.advance_amount||0)), 0);
   const ordersWithBalance = orders.filter(o=> Number(o.amount||0)-Number(o.advance_amount||0) > 0).length;
 
   const byMonth = groupSum(orders, o=>o.delivery_date.slice(0,7));
   const byShop = groupSum(orders, o=>shopName(o.shop_id));
   const byStatus = groupCount(App.orders, o=>o.status);
-  const byKind = groupCount(orders, o=>o.order_kind==='custom'?'Custom':'Catalog');
+  const byKind = groupCount(orders, o=>o.order_kind==='custom'?'Custom':o.order_kind==='counter'?'Counter':'Catalog');
   const byWeekday = groupCount(orders, o=>new Date(o.delivery_date+'T00:00:00').toLocaleDateString(undefined,{weekday:'short'}));
 
   content.innerHTML = `
@@ -2101,13 +2177,14 @@ function renderAnalyticsView(){
       <div class="stat-card"><div class="num">₹${Math.round(totalRevenue).toLocaleString()}</div><div class="lbl">Total revenue</div></div>
       <div class="stat-card"><div class="num">₹${Math.round(avg).toLocaleString()}</div><div class="lbl">Avg. order value</div></div>
       <div class="stat-card"><div class="num">${customCount}</div><div class="lbl">Custom orders</div></div>
+      <div class="stat-card"><div class="num">${counterCount}</div><div class="lbl">Counter orders</div></div>
       <div class="stat-card"><div class="num" style="color:${pendingBalance>0?'var(--accent-coral)':'inherit'};">₹${Math.round(pendingBalance).toLocaleString()}</div><div class="lbl">Pending balance</div></div>
       <div class="stat-card"><div class="num">${ordersWithBalance}</div><div class="lbl">Orders with balance due</div></div>
     </div>
     <div class="chart-card"><h3>Revenue by month</h3>${barChart(byMonth, v=>'₹'+Math.round(v).toLocaleString())}</div>
     <div class="chart-card"><h3>Orders by shop</h3>${barChart(byShop, v=>v+' orders', true)}</div>
     <div class="chart-card"><h3>Orders by status</h3>${barChart(byStatus, v=>v+' orders', true)}</div>
-    <div class="chart-card"><h3>Catalog vs custom</h3>${barChart(byKind, v=>v+' orders', true)}</div>
+    <div class="chart-card"><h3>Catalog vs custom vs counter</h3>${barChart(byKind, v=>v+' orders', true)}</div>
     <div class="chart-card"><h3>Orders by delivery weekday</h3>${barChart(byWeekday, v=>v+' orders', true, ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'])}</div>
   `;
 }
@@ -2135,7 +2212,7 @@ function renderExportView(){
     <div class="filterbar">
       <div class="field"><label>Shop</label><select id="e-shop"><option value="">All shops</option>${App.shops.map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}</select></div>
       <div class="field"><label>Status</label><select id="e-status"><option value="">All statuses</option>${Object.keys(STATUS_LABEL).map(s=>`<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select></div>
-      <div class="field"><label>Order type</label><select id="e-kind"><option value="">Catalog + Custom</option><option value="catalog">Catalog only</option><option value="custom">Custom only</option></select></div>
+      <div class="field"><label>Order type</label><select id="e-kind"><option value="">Catalog + Custom + Counter</option><option value="catalog">Catalog only</option><option value="custom">Custom only</option><option value="counter">Counter only</option></select></div>
       <div class="field"><label>Quick range</label>
         <select id="e-preset"><option value="">Custom (use dates below)</option><option value="week">This week</option><option value="month">This month</option>
           <option value="q1">Q1 ${y} (Jan–Mar)</option><option value="q2">Q2 ${y} (Apr–Jun)</option><option value="q3">Q3 ${y} (Jul–Sep)</option><option value="q4">Q4 ${y} (Oct–Dec)</option><option value="year">This year</option></select>
@@ -2188,8 +2265,9 @@ function doExport(kind){
   const rows = filteredExportRows();
   if(rows.length === 0){ toast('No orders match this filter', true); return; }
   const data = rows.map(o=>({
-    'Order ID': o.id, 'Shop': shopName(o.shop_id), 'Customer': o.customer_name, 'Order Type': o.order_kind==='custom'?'Custom':'Catalog',
-    'Item': o.order_kind==='custom' ? (o.cake_type||'Custom cake') : o.catalog_item_snapshot,
+    'Order ID': o.id, 'Shop': shopName(o.shop_id), 'Customer': o.customer_name,
+    'Order Type': o.order_kind==='custom'?'Custom':o.order_kind==='counter'?'Counter':'Catalog',
+    'Item': kindItemLabel(o),
     'Weight (kg)': o.weight_kg, 'Design Notes': o.design_notes, 'Message on Cake': o.message_on_cake,
     'Order Date': o.order_date, 'Delivery Date': o.delivery_date, 'Status': STATUS_LABEL[o.status]||o.status,
     'Approval': o.approval_status, 'Amount': Number(o.amount||0), 'Advance Received': Number(o.advance_amount||0),
